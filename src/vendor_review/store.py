@@ -20,7 +20,8 @@ class Ledger:
     def __init__(self, path, settings):
         self.settings = settings
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path, timeout=10)
+        # The web server shares one ledger across worker threads behind its own lock.
+        self.db = sqlite3.connect(path, timeout=10, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
@@ -89,7 +90,10 @@ class Ledger:
             turn_cap = (
                 self.settings.turn_tool_calls if kind == "tool" else self.settings.turn_model_calls
             )
-            if count >= turn_cap or totals[kind + "_calls"] >= cap[kind + "_calls"]:
+            # "local" = free read-only lookups over captured evidence: recorded, not capped.
+            if kind in {"tool", "model"} and (
+                count >= turn_cap or totals[kind + "_calls"] >= cap[kind + "_calls"]
+            ):
                 raise LimitError(f"{kind} call limit reached")
             if totals["held"] + units(credits) > cap["credits"]:
                 raise LimitError("Cumulative Crustdata budget exhausted (includes unknown charges)")

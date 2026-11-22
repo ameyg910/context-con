@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 import httpx
 from pydantic import ValidationError
 
+from vendor_review.discovery import DOCUMENTED_FREE, CompanySearch, company_search_body
 from vendor_review.evidence import compact, validate_response
 from vendor_review.people import (
     PeopleSearch,
@@ -17,7 +18,7 @@ from vendor_review.people import (
     premium_total,
     project_professional_data,
 )
-from vendor_review.schemas import Enrich, all_tools, request_body
+from vendor_review.schemas import Enrich, executable_tools, request_body
 from vendor_review.store import LimitError
 
 API_ROOT = "https://api.crustdata.com"
@@ -71,6 +72,10 @@ class Crustdata:
         entry = next((x for x in self.access["endpoints"] if x.get("path") == path), None)
         if not entry or entry.get("status") != "enabled":
             raise LimitError("Endpoint not enabled for this account/key")
+        if path in DOCUMENTED_FREE:
+            # Officially documented free; an observed charge above zero blocks paid dispatch.
+            rpm = entry.get("effective_rate_limit_rpm")
+            return Decimal(0), 5 if rpm is None else rpm
         if "base_credits" not in entry:
             raise LimitError("No authoritative account price; refusing unknown spend")
         price = Decimal(str(entry["base_credits"]))
@@ -89,6 +94,20 @@ class Crustdata:
                 entry.get("premium_filters"), filter_paths(body.get("filters", {}))
             )
             price *= body.get("limit", 1)
+        if isinstance(value, CompanySearch):
+            body = company_search_body(value)
+            disabled = (entry.get("fields") or {}).get("disabled", [])
+            if any(
+                field == blocked or field.startswith(blocked + ".")
+                for field in body["fields"]
+                for blocked in disabled
+            ):
+                raise LimitError("Selected company fields are not enabled for this account")
+            price += premium_total(entry.get("premium_fields"), body["fields"])
+            price += premium_total(
+                entry.get("premium_filters"), filter_paths(body.get("filters", {}))
+            )
+            price *= body["limit"]
         if isinstance(value, Enrich):
             disabled = entry.get("fields", {}).get("disabled", [])
             if any(field in disabled for field in value.fields):
@@ -122,13 +141,14 @@ class Crustdata:
                 raise LimitError("Turn deadline reached")
             if not self.settings.crustdata_api_key.get_secret_value():
                 raise LimitError("CRUSTDATA_API_KEY is missing")
-            specs = all_tools()
+            specs = executable_tools()
             if name not in specs:
                 raise LimitError("Tool is not allowlisted")
             schema, method, path, _ = specs[name]
             value = schema.model_validate(args)
-            is_free = method == "GET"
-            price, rpm = (Decimal(0), 300) if is_free else self.price(path, value)
+            is_free = method == "GET" or path in DOCUMENTED_FREE
+            # Documented-free POSTs still go through price() for the enablement check.
+            price, rpm = (Decimal(0), 300) if method == "GET" else self.price(path, value)
             wait = self.ledger.rate_wait(path, rpm, (self.access or {}).get("token_limit_rpm"))
             if wait:
                 # Never hide a long wait inside a tool/model turn. No automatic retries.

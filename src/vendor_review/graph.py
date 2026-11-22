@@ -74,6 +74,61 @@ def context_messages(messages, max_bytes=32000):
     return [SystemMessage(content=SYSTEM)] + chosen
 
 
+PAGE_VIEW_CHARS = 3000
+
+
+def slim_page(page):
+    if not isinstance(page, dict):
+        return page
+    view = dict(page)
+    for key in ("excerpt",):
+        if isinstance(view.get(key), str) and len(view[key]) > PAGE_VIEW_CHARS:
+            view[key] = view[key][:PAGE_VIEW_CHARS] + " …[view shortened; use find_passages]"
+    if isinstance(view.get("passages"), list):
+        view["passages"] = [p[:1500] for p in view["passages"][:3]]
+    if isinstance(view.get("links"), list):
+        view["links"] = view["links"][:15]
+    return view
+
+
+def turn_progress(history, limit=40):
+    """Compact list of tool calls already made since the latest buyer message, with outcomes."""
+    latest = next((i for i in range(len(history) - 1, -1, -1) if history[i].type == "human"), None)
+    if latest is None:
+        return []
+    results = {}
+    for message in history[latest:]:
+        if message.type == "tool":
+            try:
+                parsed = json.loads(message.content)
+            except (ValueError, TypeError):
+                parsed = {}
+            results[message.tool_call_id] = parsed if isinstance(parsed, dict) else {}
+    steps = []
+    for message in history[latest:]:
+        if message.type != "ai":
+            continue
+        for call in message.tool_calls:
+            result = results.get(call["id"], {})
+            args = {
+                k: v
+                for k, v in call["args"].items()
+                if k in {"url", "query", "identifier", "artifact_id", "focus", "id", "branch"}
+                or k in {"person_id", "company_id"}
+            }
+            step = {"tool": call["name"], "args": args, "status": result.get("status", "pending")}
+            if result.get("artifact_id"):
+                step["artifact_id"] = result["artifact_id"]
+            if result.get("operation_id"):
+                step["operation_id"] = result["operation_id"]
+            if call["name"] == "record_findings" and result.get("status") == "ok":
+                step["saved"] = result.get("saved_findings") or result.get("saved_requirements")
+            if result.get("status") == "denied":
+                step["reason"] = str(result.get("message", ""))[:160]
+            steps.append(step)
+    return steps[-limit:]
+
+
 def build_graph(model, client, ledger, settings, checkpointer, event=print, review=False):
     schemas = tool_schemas()
     if review:
@@ -117,6 +172,7 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print, revi
             if time.time() >= state["deadline"]:
                 raise LimitError("Turn deadline reached")
             history = state["messages"]
+            progress = turn_progress(history) if review else []
             if review:
                 latest_buyer = next(
                     i for i in range(len(history) - 1, -1, -1) if history[i].type == "human"
@@ -137,7 +193,9 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print, revi
                     replies = [
                         m for m in history[i + 1 :] if m.type == "tool" and m.tool_call_id in ids
                     ]
-                    if any(json.loads(m.content).get("status") == "ok" for m in replies):
+                    if any(
+                        json.loads(m.content).get("status") in {"ok", "partial"} for m in replies
+                    ):
                         history = [history[latest_buyer]] + history[i:]
                         break
             if review and state.get("brief"):
@@ -168,6 +226,15 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print, revi
                         result.get("data") or {}
                     ).get("records"):
                         result["data"]["records"] = compact_role_records(result["data"]["records"])
+                        messages[index] = ToolMessage(
+                            content=json.dumps(result),
+                            tool_call_id=message.tool_call_id,
+                            id=message.id,
+                        )
+                    elif result.get("api_path") in {"/web/enrich/live", "local:read_evidence"}:
+                        # The model sees a shorter view of each page; the full capture stays
+                        # persisted and find_passages/read_evidence search all of it.
+                        result["data"] = [slim_page(p) for p in result.get("data") or []]
                         messages[index] = ToolMessage(
                             content=json.dumps(result),
                             tool_call_id=message.tool_call_id,
@@ -213,12 +280,18 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print, revi
                                 ).items()
                             ],
                             "intake": readiness(state.get("brief")),
+                            # Earlier steps of this turn may be trimmed from the visible context
+                            # after a save; list them so completed work is not repeated.
+                            "completed_this_turn": progress,
                         }
                     )
                 )
-            # UTF-8 byte count is a conservative token reservation, including schema overhead.
-            reservation = len(json.dumps([m.model_dump() for m in messages], default=str).encode())
-            reservation += len(json.dumps(schemas).encode()) + settings.model_output_tokens + 2048
+            # Token reservation from serialized size. Tokens average ~4 characters; dividing
+            # bytes by 3 stays conservative without exhausting the session cap after a few calls.
+            # The ledger settles each reservation to the provider's reported usage afterwards.
+            size = len(json.dumps([m.model_dump() for m in messages], default=str).encode())
+            size += len(json.dumps(schemas).encode())
+            reservation = size // 3 + settings.model_output_tokens + 2048
             op = ledger.reserve(
                 thread,
                 state["turn"],
@@ -336,6 +409,7 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print, revi
                 "register_reference",
                 "record_coverage",
                 "read_evidence",
+                "find_passages",
             }:
                 op = None
                 try:
@@ -344,7 +418,8 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print, revi
                     prior = ledger.prior(thread, call["id"])
                     if prior:
                         raise ValueError("Local operation already recorded; do not reissue")
-                    op = ledger.reserve(thread, state["turn"], call["id"], "tool", call["name"])
+                    kind = "local" if call["name"] in {"find_passages", "read_evidence"} else "tool"
+                    op = ledger.reserve(thread, state["turn"], call["id"], kind, call["name"])
                     result, change = execute_local(call["name"], call["args"], working, ledger)
                     change = settings.redact(change)
                     working.update(change)
@@ -443,6 +518,8 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print, revi
                         "company_id": match.get("crustdata_company_id"),
                         "domain": actual,
                         "artifact_id": result.get("artifact_id"),
+                        # Evidence-based related official domains survive a re-identification.
+                        "related_domains": working.get("identity", {}).get("related_domains", []),
                     }
                     working["identity"] = identity
                     updates["identity"] = identity

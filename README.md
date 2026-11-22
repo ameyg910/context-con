@@ -24,6 +24,15 @@ Use `/report` during chat, or export after restarting **without network/model ca
 
 The intended buyer is a technical/procurement team comparing vendor claims against its requirements. This foundation accepts conversational questions about a company and returns bounded provider evidence with URLs or API artifact provenance. A completed lookup does **not** constitute vendor approval, security certification, an independently corroborated deployment or a full assessment.
 
+## Web chat and company discovery
+
+`vendor-review-web` serves a local chat UI (http://127.0.0.1:8765, or set `WEB_PORT`). The intake asks follow-up questions, the brief panel shows the target requirements, and "Start vendor search" needs explicit approval. Set `DISCOVERY=vendor_review.discovery:CrustdataDiscovery` for live discovery:
+- A short product query from the brief.
+- Free size and age filters, using size labels read from Crustdata autocomplete.
+- A ranked `/company/search` pool (`DISCOVERY_POOL`, default 12), reranked locally to the top 4.
+
+The discovery-fit score is a shortlist heuristic, not evidence. V1 evaluation is not yet connected in the web flow. See [discovery validation](docs/build/DISCOVERY_VALIDATION.md).
+
 ## Setup
 
 Tested on Windows with Python 3.14.6. Python 3.11+ is declared; other versions/platforms have not been exercised here.

@@ -1,0 +1,32 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-demo",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:DATA_DIR='.local/demo-runtime'; $env:DISCOVERY='vendor_review.demo:DemoDiscovery'; $env:V1_RUNNER='vendor_review.demo:DemoV1'; .\\.venv\\Scripts\\vendor-review-web.exe"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "web-live-discovery",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "$env:DISCOVERY='vendor_review.discovery:CrustdataDiscovery'; $env:V1_RUNNER='vendor_review.v1runner:V1Agent'; $env:V1_PARALLEL='2'; $env:SESSION_CREDITS='5'; $env:TURN_CREDITS='5'; $env:SEARCH_CREDITS='19.64'; $env:CLIENT_NAME='a growing Indian D2C e-commerce brand'; $env:PYTHONIOENCODING='utf-8'; $env:WEB_PORT='8767'; .\\.venv\\Scripts\\vendor-review-web.exe"
+      ],
+      "port": 8767,
+      "autoPort": false
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": ".venv/Scripts/vendor-review-web.exe",
+      "runtimeArgs": [],
+      "port": 8765
+    }
+  ]
+}

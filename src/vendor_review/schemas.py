@@ -123,7 +123,18 @@ def all_tools():
     return {**TOOLS, **PEOPLE_TOOLS}
 
 
+def executable_tools():
+    """Everything the REST client may dispatch, including discovery not offered to the V1 model."""
+    from vendor_review.discovery import DISCOVERY_TOOLS
+
+    return {**all_tools(), **DISCOVERY_TOOLS}
+
+
 def request_body(value):
+    from vendor_review.discovery import CompanyAutocomplete, CompanySearch, company_search_body
+
+    if isinstance(value, (CompanySearch, CompanyAutocomplete)):
+        return company_search_body(value)
     if isinstance(value, Fetch):
         return {"urls": [value.url], "human_mode": False}
     if isinstance(value, Search):

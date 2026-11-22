@@ -1,10 +1,11 @@
 """Local research tools and passage-level provenance checks; no new provider endpoints."""
 
+import json
 import re
 from typing import Literal
 
 from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from vendor_review.intake import Brief, readiness, validate_brief
 from vendor_review.references import (
@@ -68,6 +69,11 @@ focus term before refetching. A focus match only inside removed consent markup i
 Only a customer-owned passage that itself names the vendor, from a direct customer, can make the
 customer branch sufficient; integrator/partner/beneficiary references stay reported but partial.
 Professional authorship is per source: cite only sources listed in that reference's authored_sources.
+After fetching pages, call find_passages ONCE with requirement_ids listing every requirement, then quote returned sentences
+verbatim in record_findings; never retype or paraphrase a quote. record_findings saves valid
+findings and returns rejected ones with reasons: fix only the rejected ones.
+The persisted state lists completed_this_turn: steps already done this turn. Never repeat a
+completed read, registration, search or save; continue with the next unfinished step.
 """
 
 
@@ -125,6 +131,11 @@ def local_schemas():
                 "Record actual customer/professional investigation attempts, sufficiency or coverage gaps with operation/reference IDs.",
             ),
             (
+                "find_passages",
+                FindPassages,
+                "Free: exact candidate sentences from pages already captured, for a requirement ID or query. Quote them verbatim.",
+            ),
+            (
                 "read_evidence",
                 ReadEvidence,
                 "Inspect an already captured artifact or focus on another passage; local reuse, not fresh retrieval.",
@@ -137,7 +148,7 @@ def sources(messages):
     return captured_pages(messages)
 
 
-def validate_findings(args, brief, messages, references=None):
+def validate_findings(args, brief, messages, references=None, related_domains=()):
     payload = Findings.model_validate(args)
     ids = {r["id"] for r in brief.get("requirements", [])}
     pages = sources(messages)
@@ -153,13 +164,21 @@ def validate_findings(args, brief, messages, references=None):
             raise ValueError("Unknown requirement ID")
         if finding.status != "cannot_verify" and not finding.citations:
             raise ValueError("Supported/conflicting findings require fetched evidence")
+        if finding.status != "cannot_verify" and all(
+            heading_like(c.quote) for c in finding.citations
+        ):
+            raise ValueError(
+                "A menu heading or title is not a statement of capability; quote a sentence"
+            )
         origins = set()
         kinds = set()
         for citation in finding.citations:
             page = checked_passage(citation, pages)
             kinds.add(citation.source_kind)
             if citation.source_kind == "vendor_document":
-                if not on_domain(citation.url, domain):
+                if not on_domain(citation.url, domain) and not any(
+                    on_domain(citation.url, d) for d in related_domains
+                ):
                     raise ValueError(
                         "Vendor-document citation is on the wrong domain; register and attribute outside sources"
                     )
@@ -262,18 +281,144 @@ def execute_local(name, args, state, ledger=None):
         return {"status": "ok", "coverage": coverage}, {
             "coverage": {**state.get("coverage", {}), coverage["branch"]: coverage}
         }
-    new = validate_findings(args, state["brief"], state["messages"], state.get("references", []))
-    if any(f["status"] != "cannot_verify" for f in new) and not state.get("identity", {}).get(
-        "resolved"
-    ):
-        raise ValueError("Resolve vendor identity before recording supported claims")
+    if name == "find_passages":
+        return find_passages(args, state), {}
+    items = args.get("findings") if isinstance(args, dict) else None
+    if not isinstance(items, list) or not items:
+        raise ValueError("findings must be a nonempty list")
+    # Each finding is validated on its own: one malformed finding must not discard the valid
+    # ones saved alongside it. Rejections are returned with reasons for repair.
+    new, rejected = [], []
+    resolved = state.get("identity", {}).get("resolved")
+    for index, item in enumerate(items[:40]):
+        requirement = item.get("requirement_id") if isinstance(item, dict) else None
+        try:
+            checked = validate_findings(
+                {"findings": [item]},
+                state["brief"],
+                state["messages"],
+                state.get("references", []),
+                state.get("identity", {}).get("related_domains", []),
+            )
+            if checked[0]["status"] != "cannot_verify" and not resolved:
+                raise ValueError("Resolve vendor identity before recording supported claims")
+            new += checked
+        except ValidationError as exc:
+            fields = [".".join(str(p) for p in e["loc"]) + ":" + e["type"] for e in exc.errors()]
+            rejected.append({"index": index, "requirement_id": requirement, "reason": fields[:6]})
+        except ValueError as exc:
+            rejected.append({"index": index, "requirement_id": requirement, "reason": str(exc)})
+    if not new:
+        raise ValueError("No finding saved. Rejected: " + json.dumps(rejected)[:1500])
     merged = {finding_key(f): f for f in state.get("findings", [])}
     merged.update({finding_key(f): f for f in new})
     return {
-        "status": "ok",
+        "status": "partial" if rejected else "ok",
         "saved_requirements": list(dict.fromkeys(f["requirement_id"] for f in merged.values())),
         "saved_findings": [f"{r}:{c}" for r, c in merged],
+        "rejected": rejected,
     }, {"findings": list(merged.values())}
+
+
+def heading_like(sentence):
+    """Menus and headings ("Account Management Client Masters ...") are not statements."""
+    words = re.findall(r"[A-Za-z][A-Za-z'/-]*", sentence)
+    if len(words) < 6:
+        return True
+    capitalised = sum(w[0].isupper() for w in words) / len(words)
+    return capitalised > 0.6 and not sentence.rstrip().endswith((".", "!", "?"))
+
+
+class FindPassages(StrictInput):
+    requirement_id: str = Field(default="", max_length=10)
+    requirement_ids: list[str] = Field(
+        default_factory=list, max_length=40, description="Look up many requirements in one call"
+    )
+    query: str = Field(default="", max_length=300)
+    limit: int = Field(default=5, ge=1, le=8)
+
+
+BLOCKING = {"possible_login_or_challenge", "fetch_failed_or_empty", "returned_host_differs"}
+
+
+def find_passages(args, state):
+    """Exact candidate sentences from pages already captured in this conversation (free).
+
+    Every returned quote is a verbatim slice of a captured passage, so it passes the exact-
+    passage check. A keyword match is not proof of support; the model must judge meaning.
+    """
+    from vendor_review.discovery import terms
+
+    request = FindPassages.model_validate(args)
+    if request.requirement_ids:
+        # Batch form: one free call returns candidate sentences per requirement.
+        by_requirement = {}
+        for rid in dict.fromkeys(request.requirement_ids):
+            single = {"requirement_id": rid, "query": request.query, "limit": min(request.limit, 3)}
+            try:
+                by_requirement[rid] = find_passages(single, state)["passages"]
+            except ValueError as exc:
+                by_requirement[rid] = {"error": str(exc)}
+        return {
+            "status": "ok",
+            "api_path": "local:find_passages",
+            "by_requirement": by_requirement,
+            "message": "Exact captured sentences per requirement; overlap is not proof of support. "
+            "Quote verbatim in one record_findings call covering all requirements.",
+        }
+    brief = state.get("brief") or {}
+    text = request.query
+    if request.requirement_id:
+        match = next(
+            (r for r in brief.get("requirements", []) if r["id"] == request.requirement_id), None
+        )
+        if not match:
+            raise ValueError("Unknown requirement ID")
+        text = f"{match['text']} {text}"
+    wanted = terms(text)
+    if not wanted:
+        raise ValueError("Give a requirement_id or a query with meaningful words")
+    domain = brief.get("domain", "").lower().removeprefix("www.")
+    found = []
+    for (artifact, url), page in captured_pages(state["messages"]).items():
+        title = (page.get("title") or "").lower()
+        if set(page.get("quality", [])) & BLOCKING or "not found" in title:
+            continue
+        vendor = on_domain(url or "", domain)
+        for passage in page.get("passages") or [page.get("excerpt", "")]:
+            for sentence in re.split(r"(?<=[.!?])\s+", passage or ""):
+                sentence = sentence.strip()
+                if not 30 <= len(sentence) <= 600 or heading_like(sentence):
+                    continue
+                overlap = len(wanted & terms(sentence)) / len(wanted)
+                if overlap > 0:
+                    found.append(
+                        (overlap + (0.15 if vendor else 0), artifact, url, sentence, vendor)
+                    )
+    found.sort(key=lambda x: -x[0])
+    seen, out = set(), []
+    for score, artifact, url, sentence, vendor in found:
+        if sentence in seen:
+            continue
+        seen.add(sentence)
+        out.append(
+            {
+                "artifact_id": artifact,
+                "url": url,
+                "quote": sentence,
+                "on_vendor_domain": vendor,
+                "term_overlap": round(min(score, 1.0), 2),
+            }
+        )
+        if len(out) >= request.limit:
+            break
+    return {
+        "status": "ok",
+        "api_path": "local:find_passages",
+        "passages": out,
+        "message": "Exact captured sentences; overlap is not proof of support. Fetch a relevant "
+        "vendor page first if none fit. Quote these verbatim in record_findings.",
+    }
 
 
 EVIDENCE_CLASS = {

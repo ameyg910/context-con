@@ -129,6 +129,12 @@ def ground_final(content, messages):
 
 
 def compact(name, raw, requested=None):
+    if name == "search_companies":
+        from vendor_review.discovery import compact_company_search
+
+        return compact_company_search(raw)
+    if name == "company_autocomplete":
+        return {"suggestions": raw.get("suggestions", [])[:100]}
     if name in {"search_people", "enrich_person", "search_person_posts"}:
         if name in {"search_people", "enrich_person"}:
             from vendor_review.people import compact_role_records
@@ -157,7 +163,16 @@ def compact(name, raw, requested=None):
     if name == "account_credits":
         return raw
     if name == "web_search":
+        # Opaque search-engine redirect links cannot be fetched or attributed; drop them.
+        usable = [
+            r
+            for r in raw["results"]
+            if not (isinstance(r, dict) and "/goto?" in str(r.get("url", "")))
+        ]
+        dropped = len(raw["results"]) - len(usable)
+        raw = {**raw, "results": usable, "redirect_results_dropped": dropped}
         return {
+            "redirect_results_dropped": dropped,
             "results": raw["results"][:8],
             "provider_timestamp_ms": raw.get("timestamp"),
             "metadata": raw.get("metadata"),
@@ -248,6 +263,14 @@ def compact(name, raw, requested=None):
 
 
 def validate_response(name, raw):
+    if name == "search_companies":
+        from vendor_review.discovery import valid_company_search
+
+        return valid_company_search(raw)
+    if name == "company_autocomplete":
+        from vendor_review.discovery import valid_autocomplete
+
+        return valid_autocomplete(raw)
     if name == "search_people":
         return (
             isinstance(raw, dict)
