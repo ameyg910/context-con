@@ -3,7 +3,7 @@
 import hashlib
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -52,6 +52,18 @@ def ground_final(content, messages):
 
 
 def compact(name, raw, requested=None):
+    if name in {"search_people", "enrich_person", "search_person_posts"}:
+        if name in {"search_people", "enrich_person"}:
+            from vendor_review.people import compact_role_records
+
+            raw = compact_role_records(raw)
+        serialized = json.dumps(raw, ensure_ascii=False)
+        return {
+            "records": raw if len(serialized) <= 18000 else None,
+            "excerpt": serialized[:18000] if len(serialized) > 18000 else None,
+            "truncated": len(serialized) > 18000,
+            "provenance": "Indexed provider fields, not independent verification; roles and post dates require matching",
+        }
     if name == "account_access":
         return {
             "api_version": raw.get("api_version"),
@@ -89,12 +101,25 @@ def compact(name, raw, requested=None):
         for page in raw:
             html = page.get("content") or ""
             soup = BeautifulSoup(html, "html.parser")
+            links = list(
+                dict.fromkeys(
+                    urljoin(page.get("url") or requested or "", a["href"])
+                    for a in soup.find_all("a", href=True)
+                    if urlsplit(urljoin(page.get("url") or requested or "", a["href"])).scheme
+                    in {"http", "https"}
+                )
+            )[:40]
             for tag in soup(["script", "style", "nav", "footer", "noscript"]):
                 tag.decompose()
             text = soup.get_text(" ", strip=True)
             flags = ["relevance_and_claim_support_require_review", "final_redirect_url_not_exposed"]
             if not page.get("success") or not text:
                 flags.append("fetch_failed_or_empty")
+            if any(
+                marker in (page.get("title") or "").lower()
+                for marker in ("page not found", "404 not found", "page unavailable")
+            ):
+                flags.append("possible_not_found")
             if any(
                 marker in text.lower()
                 for marker in (
@@ -122,6 +147,7 @@ def compact(name, raw, requested=None):
                     "title": page.get("title"),
                     "provider_timestamp_seconds": page.get("timestamp"),
                     "excerpt": text[:8000],
+                    "links": links,
                     "quality": flags,
                     "content_sha256": hashlib.sha256(text.encode()).hexdigest(),
                 }
@@ -143,6 +169,29 @@ def compact(name, raw, requested=None):
 
 
 def validate_response(name, raw):
+    if name == "search_people":
+        return (
+            isinstance(raw, dict)
+            and isinstance(raw.get("profiles"), list)
+            and all(isinstance(p, dict) for p in raw["profiles"])
+        )
+    if name == "search_person_posts":
+        return (
+            isinstance(raw, dict)
+            and isinstance(raw.get("posts"), list)
+            and all(isinstance(p, dict) for p in raw["posts"])
+        )
+    if name == "enrich_person":
+        return (
+            isinstance(raw, list)
+            and len(raw) == 1
+            and all(
+                isinstance(r, dict)
+                and isinstance(r.get("matches"), list)
+                and all(isinstance(m.get("person_data"), dict) for m in r["matches"])
+                for r in raw
+            )
+        )
     if name == "account_access":
         return (
             isinstance(raw, dict)

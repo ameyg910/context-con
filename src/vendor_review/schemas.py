@@ -113,8 +113,14 @@ def tool_schemas():
                 "parameters": spec[0].model_json_schema(),
             },
         }
-        for name, spec in TOOLS.items()
+        for name, spec in all_tools().items()
     ]
+
+
+def all_tools():
+    from vendor_review.people import PEOPLE_TOOLS
+
+    return {**TOOLS, **PEOPLE_TOOLS}
 
 
 def request_body(value):

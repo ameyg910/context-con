@@ -1,6 +1,26 @@
 # Technical Vendor Evidence Review
 
-Idea C, foundation milestone: a local Python **LangGraph** chat agent with typed Crustdata REST tools, visible operations, persistent conversations and a durable cost ledger. The customer/professional investigation graph and final vendor-assessment dossier are subsequent stages. Their evidence requirements remain authoritative in [PRODUCT](docs/build/PRODUCT.md) and [WORKFLOW](docs/build/WORKFLOW.md).
+Idea C: a local Python **LangGraph** agent with guided buyer intake, a requirement/claim map, preliminary vendor-document research, and a standalone HTML evidence dossier. Typed Crustdata REST tools, visible operations, persistent conversations and a durable cost ledger bound the work. Customer corroboration, professional investigation and full semantic evidence review remain subsequent stages. Their requirements remain authoritative in [PRODUCT](docs/build/PRODUCT.md) and [WORKFLOW](docs/build/WORKFLOW.md).
+
+## Intake → vendor research → HTML dossier
+
+The canonical regression scenario is now **[project44](benchmarks/project44/README.md)**. Its versioned brief preserves the original questions/checks; historical reviewer findings stay in a separate file and are not supplied to the research agent. Confirm scope with `vendor-review --benchmark project44 --confirm-only`, or begin intake with `vendor-review --benchmark project44 --thread project44-benchmark`. Scope acknowledgement is not a research pass.
+
+Chat normally with `vendor-review --thread BUYER_NAME`. The default is now the research workflow. It records the vendor/domain, buyer purpose, requirements, priority, measurable acceptance criteria and constraints for geography, integrations, scale, security, budget and timeline. Missing information triggers targeted questions and blocks paid research. Explicit unknowns/not-applicable answers are retained; it does not invent a buyer's constraints. Literal buyer quotes/values anchor the brief. Completeness and requirement-specificity scores describe intake quality, **not vendor suitability**.
+
+After intake, the graph resolves the exact vendor domain and researches relevant product/developer/API, integration, engineering, release and security documents. It can search, follow captured document links, fetch more material and refine findings within the budget. Search snippets do not qualify as supporting evidence. Recorded passages must match captured vendor-owned pages; wrong-domain, challenge and empty pages are rejected. Repeated copies cannot establish conflicting documents. These checks establish passage origin; claim interpretation remains preliminary and does not establish independent verification.
+
+The HTML is human-readable by default: a concise finding, plain-language evidence status, uncertainty and next actions. Exact passages, original buyer wording, extra verification steps and the technical source/cost ledger expand on demand. Follow-up chat should explain the saved passage and its limits, and distinguish further research from an answer already established by the source.
+
+Each turn exports an immutable HTML/JSON snapshot under `.local/reports/THREAD/` plus `latest.html`. The report includes all requirements, including unresearched ones, claim mapping, status, exact passages/URLs/artifacts, retrieval dates, limitations, verification steps, source hashes, coverage and costs. Statuses are `vendor_documented`, `partially_supported`, `conflicting_vendor_docs`, and `cannot_verify`. **Independently verified remains No** in this stage. Proposed pilot steps are recommendations, not executed tests. Changing the brief invalidates existing findings/identity; prior HTML snapshots remain available.
+
+Use `/report` during chat, or export after restarting **without network/model calls**:
+
+```powershell
+.\.venv\Scripts\vendor-review --thread BUYER_NAME --report
+```
+
+`--chat-only` explicitly selects the previous foundation chat without intake gating. Reports remain local; nothing is published. View the generated HTML file in your browser. The browser automation policy in this environment blocked local-file preview; structural and escaping tests passed, but visual browser QA is not claimed. See [research validation](docs/build/RESEARCH_VALIDATION.md).
 
 The intended buyer is a technical/procurement team comparing vendor claims against its requirements. This foundation accepts conversational questions about a company and returns bounded provider evidence with URLs or API artifact provenance. A completed lookup does **not** constitute vendor approval, security certification, an independently corroborated deployment or a full assessment.
 
@@ -45,9 +65,9 @@ Start Ollama separately if necessary (`ollama serve`). The application never dow
 .\.venv\Scripts\vendor-review --thread buyer-demo
 ```
 
-Ask, for example: `Identify the company at crustdata.com and report its company ID with API provenance. Do not run other paid tools.` Follow up in the same chat. Exit with `/exit` or Ctrl+C; restart with the **same command and thread name** to retain history and cumulative allowance.
+Begin with your vendor and buyer use case; the agent asks for missing requirements and constraints. For the older foundation lookup alone, add `--chat-only`. Follow up in the same chat. Exit with `/exit` or Ctrl+C; restart with the **same command and thread name** to retain history and cumulative allowance.
 
-Commands: `/history`, `/ledger`, `/new another-buyer`, `/exit`. A new thread has separate messages and its own explicitly configured allowance; it does not provide an application-wide spending ceiling. One process owns a runtime directory at a time. Keep the same `DATA_DIR` to preserve history, rate windows and budgets. Deleting it removes the local accounting boundary.
+Commands: `/history`, `/ledger`, `/report`, `/new another-buyer`, `/exit`. A new thread has separate messages and its own explicitly configured allowance; it does not provide an application-wide spending ceiling. One process owns a runtime directory at a time. Keep the same `DATA_DIR` to preserve history, rate windows and budgets. Deleting it removes the local accounting boundary.
 
 Scripted turns use the same graph and real providers:
 
@@ -85,7 +105,7 @@ Only these fixed read-only routes are available. The model cannot supply an endp
 
 [CONTRACTS](docs/build/CONTRACTS.md) links the official request, response, pricing and header sources. Effective account grants and prices govern dispatch. A missing price blocks dispatch. Enrichment uses a selected company ID to avoid ambiguous names producing an unbounded record count. No retries are automatic, including 429s and schema failures. The next turn may retry a transient failure after reviewing its outcome; a timeout must not be treated as proof of no charge.
 
-Default session cap: **10 Crustdata credits**, 40 tool operations, 30 model calls and 100,000 model tokens. Each turn allows **5 Crustdata credits**, 5 tool operations, 5 model calls and 120 seconds. Each model output is capped at 1,024 tokens; requests are capped at 30 seconds. Environment settings allow lowering limits. Session limits are durable and only decrease when resuming a thread: increasing an environment value cannot silently replenish it. Tool requests within one model response are checked separately and execute sequentially. Free preflight calls count toward session tool operations. This workspace's ignored `.env` allows 60-second requests and 180-second turns for initial live validation; the example defaults remain smaller.
+Default session cap: **10 Crustdata credits**, 40 tool operations, 30 model calls and 100,000 model tokens. Each turn allows **5 Crustdata credits**, 10 tool operations, 10 model calls and 120 seconds. Each model output is capped at 2,048 tokens; requests are capped at 30 seconds. Environment settings allow lowering limits. Session limits are durable and only decrease when resuming a thread: increasing an environment value cannot silently replenish it. Tool requests within one model response are checked separately and execute sequentially. Free preflight calls count toward session tool operations. This workspace's ignored `.env` allows 60-second requests and 180-second turns for initial live validation; the example defaults remain smaller.
 
 Before dispatch the ledger atomically reserves credits/tokens. Returned `X-Credits-Used` is the actual charge; absent/uncertain charges retain the reservation. Charged unusable evidence still costs credits. Model usage and configured token prices are recorded separately; monetary amounts remain **unpriced** without authoritative configured rates. No conversion from Crustdata credits to money is assumed. Local hardware/electricity costs are unpriced.
 
@@ -110,7 +130,7 @@ After an interrupted process, pending graph work is abandoned with an explicit c
 
 ## Evidence boundaries
 
-Search snippets are discovery leads. Fetch excerpts identify truncation, possible login/challenge pages, returned-host differences, incomplete HTML and content hashes. Crustdata fetch does not expose a separately verified final redirect URL in this contract; relevance and origin still require review. Raw competing captures remain available. Final responses attach actual API artifact receipts; generated citation URLs absent from retrieved tool data are rejected and replaced by a captured-evidence fallback. This checks citation origin, not whether every claim follows semantically from a source. This milestone does not implement claim-specific passage selection, comprehensive origin deduplication, people/social research, customer-owned corroboration or a final evidence-quality review graph. It must not claim those gates have passed.
+Search snippets are discovery leads. Fetch excerpts identify truncation, possible login/challenge pages, returned-host differences, incomplete HTML and content hashes. Crustdata fetch does not expose a separately verified final redirect URL in this contract; relevance and origin still require review. Raw competing captures remain available. Final responses attach actual API artifact receipts; generated citation URLs absent from retrieved tool data are rejected and replaced by a captured-evidence fallback. This checks citation origin, not whether every claim follows semantically from a source. This milestone implements model-selected passages checked against fetched excerpts, but not comprehensive origin deduplication, people/social research, customer-owned corroboration or a final semantic evidence-quality review graph. It must not claim those gates have passed.
 
 The model sees bounded whole recent turns; full history remains persisted. Long prior context may fall outside that window, in which case the assistant must ask for missing context. Provider content cannot change executable permissions or budgets. Grounding instructions are enforced by the system prompt and qualified evidence envelopes; automatic claim-to-source verification is future work, not a guarantee of the foundation.
 

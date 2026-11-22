@@ -21,12 +21,12 @@ class Settings(BaseModel):
     data_dir: Path = Path(".local/runtime")
     session_credits: Decimal = Field(default=Decimal("10"), ge=0, le=1000)
     turn_credits: Decimal = Field(default=Decimal("5"), ge=0, le=1000)
-    turn_tool_calls: int = Field(default=5, ge=1, le=20)
+    turn_tool_calls: int = Field(default=10, ge=1, le=20)
     session_tool_calls: int = Field(default=40, ge=1, le=1000)
-    turn_model_calls: int = Field(default=5, ge=1, le=20)
+    turn_model_calls: int = Field(default=10, ge=1, le=20)
     session_model_calls: int = Field(default=30, ge=1, le=1000)
     session_model_tokens: int = Field(default=100000, ge=1, le=10000000)
-    model_output_tokens: int = Field(default=1024, ge=64, le=8192)
+    model_output_tokens: int = Field(default=2048, ge=64, le=8192)
     turn_seconds: float = Field(default=120, gt=0, le=600)
     request_seconds: float = Field(default=30, gt=0, le=60)
     model_input_usd_per_million: Decimal | None = Field(default=None, ge=0)
@@ -81,5 +81,7 @@ class Settings(BaseModel):
         for secret in (self.crustdata_api_key, self.gemini_api_key):
             if secret.get_secret_value():
                 value = value.replace(secret.get_secret_value(), "[REDACTED]")
-        value = re.sub(r"(?i)Bearer\s+[^\s\"']+", "Bearer [REDACTED]", value)
+        value = re.sub(
+            r"(?i)Bearer\s+(?!authentication\b|auth\b|token\b)[^\s\"']+", "Bearer [REDACTED]", value
+        )
         return re.sub(r"(?:cd_[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,})", "[REDACTED]", value)
