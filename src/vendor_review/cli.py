@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -12,17 +13,27 @@ from contextlib import contextmanager
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from vendor_review.benchmarks import benchmark_prompt, confirm_benchmark, load_benchmark
 from vendor_review.config import Settings
 from vendor_review.crustdata import Crustdata
 from vendor_review.graph import build_graph, turn_input
 from vendor_review.models import make_model
+from vendor_review.report import write_report
 from vendor_review.store import Ledger
 
 
 def display(value):
     # Do not allow retrieved terminal control sequences to execute in a terminal.
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(part, dict) and part.get("type") == "text" for part in value)
+    ):
+        value = "\n".join(part.get("text", "") for part in value)
     text = value if isinstance(value, str) else json.dumps(value, indent=2, default=str)
-    print(re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text), flush=True)
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+    encoding = sys.stdout.encoding or "utf-8"
+    print(text.encode(encoding, errors="backslashreplace").decode(encoding), flush=True)
 
 
 @contextmanager
@@ -147,6 +158,19 @@ def run(args, settings):
             settings.data_dir / "checkpoints.sqlite", check_same_thread=False
         )
         try:
+            if args.confirm_only:
+                record, path = confirm_benchmark(
+                    load_benchmark(args.benchmark),
+                    make_model(settings),
+                    ledger,
+                    settings,
+                    SqliteSaver(connection),
+                    thread,
+                    display,
+                )
+                display(record)
+                display("Benchmark confirmation: " + str(path))
+                return 0 if record["coverage_check"] == "passed" else 1
             if args.ledger:
                 display(ledger.summary(thread))
                 display(ledger.recent(thread))
@@ -157,6 +181,13 @@ def run(args, settings):
                 ).fetchone()
                 display(json.loads(row[0]) if row else "Artifact not found")
                 return 0 if row else 1
+            if args.report:
+                checkpoint = SqliteSaver(connection).get_tuple(
+                    {"configurable": {"thread_id": thread}}
+                )
+                state = checkpoint.checkpoint["channel_values"] if checkpoint else {}
+                display(str(write_report(state, ledger, thread, settings)))
+                return 0
             if args.smoke:
                 return live_smoke(client, ledger, thread, settings)
             turn = uuid.uuid4().hex
@@ -170,16 +201,26 @@ def run(args, settings):
                     "Crustdata preflight failed. Chat can continue; paid tools remain disabled."
                 )
             graph = build_graph(
-                make_model(settings), client, ledger, settings, SqliteSaver(connection), display
+                make_model(settings),
+                client,
+                ledger,
+                settings,
+                SqliteSaver(connection),
+                display,
+                review=not args.chat_only,
             )
             config = {"configurable": {"thread_id": thread}, "recursion_limit": 100}
             abandon_pending(graph, config)
             display(f"Technical Vendor Evidence Review · foundation · thread={thread}")
-            display("/new [name]  /history  /ledger  /exit")
+            display("/new [name]  /history  /ledger  /report  /exit")
             pending = iter(args.prompt) if args.prompt else None
+            initial = benchmark_prompt(load_benchmark(args.benchmark)) if args.benchmark else None
             while True:
                 try:
-                    text = next(pending) if pending else input("you> ")
+                    if initial is not None:
+                        text, initial = initial, None
+                    else:
+                        text = next(pending) if pending else input("you> ")
                 except (EOFError, StopIteration):
                     break
                 if text.strip() == "/exit":
@@ -202,11 +243,21 @@ def run(args, settings):
                     for message in graph.get_state(config).values.get("messages", []):
                         display({"type": message.type, "content": message.content})
                     continue
+                if text.strip() == "/report":
+                    display(
+                        str(write_report(graph.get_state(config).values, ledger, thread, settings))
+                    )
+                    continue
                 if not text.strip():
                     continue
                 state = graph.invoke(turn_input(text, settings), config)
+                report_path = (
+                    write_report(state, ledger, thread, settings) if not args.chat_only else None
+                )
                 display(state["messages"][-1].content)
                 display(ledger.summary(thread))
+                if report_path:
+                    display("HTML dossier: " + str(report_path))
                 if pending and state.get("outcome") in {"model_failed", "budget_stop"}:
                     return 1
             return 0
@@ -226,6 +277,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--thread", default="default", type=validate_thread)
     parser.add_argument(
+        "--benchmark",
+        choices=["project44"],
+        help="Load the versioned synthetic benchmark, without historical reference answers",
+    )
+    parser.add_argument(
+        "--confirm-only",
+        action="store_true",
+        help="Ask the model to acknowledge benchmark scope; no research tools or Crustdata calls",
+    )
+    parser.add_argument(
+        "--chat-only", action="store_true", help="Legacy foundation chat without gated intake"
+    )
+    parser.add_argument(
         "--prompt", action="append", help="Run a turn then exit; repeat for multiple turns"
     )
     mode = parser.add_mutually_exclusive_group()
@@ -237,9 +301,19 @@ def main():
     )
     mode.add_argument("--ledger", action="store_true", help="Inspect local ledger without network")
     mode.add_argument("--artifact", help="Inspect a local artifact without network")
+    mode.add_argument(
+        "--report", action="store_true", help="Export saved HTML dossier without network"
+    )
     args = parser.parse_args()
+    if args.confirm_only and not args.benchmark:
+        parser.error("--confirm-only requires --benchmark")
+    if args.confirm_only and args.thread == "default":
+        args.thread = "project44-confirm-" + uuid.uuid4().hex[:8]
     try:
-        return run(args, Settings.load())
+        settings = Settings.load()
+        if args.confirm_only:
+            settings = settings.model_copy(update={"session_credits": 0})
+        return run(args, settings)
     except KeyboardInterrupt:
         display(
             "Interrupted. Saved operations remain; unknown dispatches are never automatically replayed."

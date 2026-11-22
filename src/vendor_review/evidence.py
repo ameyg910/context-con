@@ -3,7 +3,7 @@
 import hashlib
 import json
 import re
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -89,6 +89,14 @@ def compact(name, raw, requested=None):
         for page in raw:
             html = page.get("content") or ""
             soup = BeautifulSoup(html, "html.parser")
+            links = list(
+                dict.fromkeys(
+                    urljoin(page.get("url") or requested or "", a["href"])
+                    for a in soup.find_all("a", href=True)
+                    if urlsplit(urljoin(page.get("url") or requested or "", a["href"])).scheme
+                    in {"http", "https"}
+                )
+            )[:40]
             for tag in soup(["script", "style", "nav", "footer", "noscript"]):
                 tag.decompose()
             text = soup.get_text(" ", strip=True)
@@ -122,6 +130,7 @@ def compact(name, raw, requested=None):
                     "title": page.get("title"),
                     "provider_timestamp_seconds": page.get("timestamp"),
                     "excerpt": text[:8000],
+                    "links": links,
                     "quality": flags,
                     "content_sha256": hashlib.sha256(text.encode()).hexdigest(),
                 }

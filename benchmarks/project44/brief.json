@@ -1,0 +1,119 @@
+{
+  "id": "project44",
+  "version": "1.0.0",
+  "source_review_date": "2026-11-22",
+  "scenario_kind": "synthetic benchmark reconstructed from the original assistant-reviewed probe; no real buyer constraints supplied",
+  "vendor": "project44",
+  "domain": "project44.com",
+  "buyer_context": "Mid-size Indian 3PL evaluating logistics visibility/integration and AI workflow claims",
+  "requirements": [
+    {
+      "id": "R1",
+      "question": "Which current product, SKU and contracting route serves a new mid-size Indian 3PL: project44, LSP44 or another offering? Reconcile current API and security scope before judging fit.",
+      "stage": "current_vendor_research",
+      "priority": "question"
+    },
+    {
+      "id": "R2",
+      "question": "Does the offered product document a unified multi-mode shipment-tracking API? Inspect authentication, regional hosts/sandbox, webhook retry/error semantics, duplicates, timeouts, queue expiry, idempotency and category-specific rate limits. Actual buyer lane coverage and runtime behavior remain untested.",
+      "stage": "current_vendor_research",
+      "priority": "question"
+    },
+    {
+      "id": "R3",
+      "question": "What evidence supports historical Girteka use, and what current comparable customer deployment can be established? Preserve product, date, region and relationship attribution; do not infer a direct project44-Asendia contract through Girteka.",
+      "stage": "deferred_customer_corroboration",
+      "priority": "question"
+    },
+    {
+      "id": "R4",
+      "question": "What AI agents and configurable workflows are described and released? Distinguish dated release evidence from tenant entitlement, successful execution, approval controls and recovery behavior.",
+      "stage": "current_vendor_research",
+      "priority": "question"
+    },
+    {
+      "id": "R5",
+      "question": "What supports the claim of 85% faster exception resolution? Seek cohort, baseline, metric definition, distribution and comparability before using it in ROI.",
+      "stage": "current_vendor_research",
+      "priority": "question"
+    },
+    {
+      "id": "R6",
+      "question": "What SOC 2 Type II and ISO 27001 assurances are listed for Movement or the offered product? Separate trust-center labels from reviewed in-scope reports, certificate validity, audit periods and exceptions.",
+      "stage": "current_vendor_research",
+      "priority": "question"
+    },
+    {
+      "id": "R7",
+      "question": "What public evidence describes cloud architecture, GKE/Kubernetes, multi-region/cloud operations and infrastructure cost claims? Attribute Cast AI supplier testimony and distinguish an initial-cluster saving from whole-company savings.",
+      "stage": "current_vendor_research",
+      "priority": "question"
+    },
+    {
+      "id": "R8",
+      "question": "What dependencies and processing roles are disclosed, including hosting and generative-AI providers? Check SKU-specific regional flows, retention and training-use questions; do not infer proprietary model ownership, false AI claims or that all data reaches all subprocessors.",
+      "stage": "current_vendor_research",
+      "priority": "question"
+    }
+  ],
+  "checks": [
+    {
+      "id": "G1",
+      "instruction": "Resolve vendor/domain/product/business identity before dependent conclusions; old customer/security evidence does not automatically transfer across the project44/LSP44 boundary."
+    },
+    {
+      "id": "G2",
+      "instruction": "Preserve the five original claim areas (API, Girteka, agents, 85% outcome, security); additional fit/dependency questions do not replace them."
+    },
+    {
+      "id": "G3",
+      "instruction": "Read original relevant documents and exact passages; snippets, badges and vendor repetition are not independent verification."
+    },
+    {
+      "id": "G4",
+      "instruction": "Check requested/returned URL, body relevance, truncation and login/challenge state. Preserve retrieval conflicts, including Girteka recruiting redirects; do not treat HTTP 200 as usable evidence."
+    },
+    {
+      "id": "G5",
+      "instruction": "Keep publication, modification, release/event, record-refresh and retrieval dates distinct. Relevant post-2026-09-01 events need actual dated evidence, not a recent retrieval timestamp."
+    },
+    {
+      "id": "G6",
+      "instruction": "Deduplicate source origins/content; two Girteka articles are one customer origin. Historical use does not establish a current contract, Indian coverage, new AI adoption or a direct Asendia relationship."
+    },
+    {
+      "id": "G7",
+      "instruction": "Preserve exact mode/version-specific webhook failure and category rate-limit rules; do not generalize all server errors as retryable or one rate to all endpoints."
+    },
+    {
+      "id": "G8",
+      "instruction": "Every question gets support limited to its scope or cannot verify, with missing evidence, supplier questions and a reproducible pilot. No supplier approval, falsehood verdict, proprietary-IP determination or security certification."
+    },
+    {
+      "id": "G9",
+      "instruction": "Buyer sets lane mix, workloads, integrations, thresholds, budget and timing. Keep these missing until supplied; research acceptance criteria are not invented commercial must-haves."
+    },
+    {
+      "id": "G10",
+      "instruction": "Enforce budgets, visible operations, returned charges, durable history and source provenance. Retain an HTML/JSON dossier; no outreach, operational vendor API tests, accounts or deployment."
+    },
+    {
+      "id": "G11",
+      "instruction": "Keep customer corroboration and professional/timeline investigation in the complete benchmark as pending branches; vendor-only review cannot claim they ran."
+    },
+    {
+      "id": "G12",
+      "instruction": "This historical public probe is not a current ground-truth answer key. Reacquire evidence for live runs, separate stale/reference expectations, and do not hardcode project44 facts into the agent."
+    }
+  ],
+  "missing_buyer_inputs": [
+    "Exact product/SKU and contracting entity",
+    "Carrier mix, transport modes, lanes and regions",
+    "Target integrations, deployment/data constraints and workload/scale",
+    "Buyer pass/fail thresholds and baseline metrics",
+    "Security/data-processing requirements and review owner",
+    "Commercial budget and timeline"
+  ],
+  "output": "HTML requirements/claim matrix with exact source passages, evidence status, independent-verification limits and verification plan; retain source/cost dossier",
+  "professional_branch": "Deferred: relevant current/former vendor/customer professional evidence, matched to roles/dates and original artifacts; no outreach"
+}

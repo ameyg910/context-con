@@ -1,0 +1,20 @@
+# Foundation contract verification
+
+Verified against official documentation on 2026-11-22, starting from [llms.txt](https://docs.crustdata.com/llms.txt). These are REST contracts, not connector/MCP schemas. Authentication is application-owned, sent only to the fixed `https://api.crustdata.com` host as bearer auth with `x-api-version: 2025-11-01`. Provider redirects are not followed by the authenticated client.
+
+| Operation | Exact implemented request | Response contract / source |
+| --- | --- | --- |
+| Access | `GET /account/endpoints`, no filters | Object with `endpoints`, statuses, field grants, effective RPM, own `base_credits` and optional premiums. [Permissions](https://docs.crustdata.com/general/permissions.md) |
+| Balance | `GET /account/credits`, no body | `account.credits`. Both account checks are documented free. [Credits](https://docs.crustdata.com/general/credits.md) |
+| Identify | `POST /company/identify`, exactly one of `domains:[value]` or `names:[value]`; domains set `exact_match:true` | Array of `matched_on`, `match_type`, `matches[].confidence_score`, `matches[].company_data`. [Identify](https://docs.crustdata.com/company-docs/identify/introduction.md) |
+| Enrich | `POST /company/enrich`, `crustdata_company_ids:[selected_id]`, explicit `fields` | Same match envelope; only five documented non-premium section groups exposed. Handles HTTP errors and 200 empty matches. [Reference](https://docs.crustdata.com/company-docs/enrichment/reference.md) |
+| Search | `POST /web/search/live`, `query`, `sources:[web or news]`, `page:1` | Object `success`, `results`, `metadata`, `timestamp` in milliseconds. `page` aggregates pages, not an offset. [Reference](https://docs.crustdata.com/web-docs/search/reference.md) |
+| Fetch | `POST /web/enrich/live`, `urls:[url]`, `human_mode:false` | Array with `success`, nullable `url/title/content/timestamp`; timestamp is seconds. Partial/failed fetches can be HTTP 200. [Fetch](https://docs.crustdata.com/web-docs/fetch/introduction.md) |
+
+Actual per-call charge comes from `X-Credits-Used`; request identity from `X-Request-Id`. Standard prices are not substituted for missing account prices. See [credits and per-call usage](https://docs.crustdata.com/general/credits.md), [account prices](https://docs.crustdata.com/general/permissions.md), [pricing](https://docs.crustdata.com/general/pricing.md), [rate-limit headers](https://docs.crustdata.com/general/rate-limits.md). No unknown price is interpreted as free. Prior documentation conflict D3 remains in OPEN_QUESTIONS as history; the current account price and returned charge govern this implementation.
+
+The live local key enabled all four paid routes: identify 0.2, basic company enrichment 2, search 1/page and fetch 1/page. Observed effective RPM were 5, 15, 10 and 10 respectively. These are dated observations, not permanent entitlements. The client reads them again at startup. Optional `premium_fields` can be null on endpoints with no premiums; only enrichment uses them.
+
+Framework/provider contracts: [LangGraph quickstart](https://docs.langchain.com/oss/python/langgraph/quickstart), [SQLite/thread persistence](https://docs.langchain.com/oss/python/langgraph/persistence), [Gemini LangChain integration](https://docs.langchain.com/oss/python/integrations/chat/google_generative_ai), [Ollama integration](https://docs.langchain.com/oss/python/integrations/chat/ollama), [Ollama tool calling](https://docs.ollama.com/capabilities/tool-calling), [local model capabilities](https://docs.ollama.com/api-reference/show-model-details.md), [Gemini models](https://aistudio.google.com/docs/models). Package APIs were also checked against installed source and exercised by tests. Gemini function-call thought signatures are preserved through checkpoints; arbitrary provider response metadata is not.
+
+The implementation uses no MCP tool names, indexed people/social contracts, live professional-network retrieval, contact endpoints, watches, batches or Agent Search. Those require separate contract verification in later stages.

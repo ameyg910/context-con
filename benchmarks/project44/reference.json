@@ -1,0 +1,71 @@
+{
+  "usage": "Historical reviewer-only expectations, not agent input or fresh proof. Revalidate against live evidence; schema/statuses are internal.",
+  "source_review_date": "2026-11-22",
+  "legacy_claims": [
+    {
+      "id": "C1",
+      "claim": "project44 offers a unified, multi-mode shipment-tracking API.",
+      "origin": "S03",
+      "sources": [
+        "S02",
+        "S03",
+        "S04",
+        "S05"
+      ],
+      "assessment": "documented_interface_not_runtime_verified",
+      "finding": "Public integration guidance supports a real integration surface. Availability for the buyer's chosen SKU, modes, regions and carrier lanes remains to be checked with the supplier.",
+      "next_evidence": "Current SKU/API mapping and authorized sandbox credentials; test real buyer lanes and webhook failure cases."
+    },
+    {
+      "id": "C2",
+      "claim": "Girteka has used project44 to provide shipment visibility.",
+      "origin": "S07",
+      "sources": [
+        "S06",
+        "S07"
+      ],
+      "assessment": "historical_customer_support_with_retrieval_conflict",
+      "finding": "Customer-origin articles exposed by the page reader describe use in 2022/2023. Direct HTTP now redirects to a recruiting site. These support a historical relationship with a freshness/retrieval caveat, not a current contract or new agent deployment.",
+      "next_evidence": "Current customer reference for the same product and comparable operating region; reconcile page versions."
+    },
+    {
+      "id": "C3",
+      "claim": "The vendor offers AI agents and configurable agent workflows.",
+      "origin": "S11",
+      "sources": [
+        "S11",
+        "S14"
+      ],
+      "assessment": "vendor_described_and_release_documented_not_execution_verified",
+      "finding": "A product page and dated October 2026 release notes provide feature and release evidence. Agent count, safety controls and successful autonomous outcomes have not been observed.",
+      "next_evidence": "Demonstration with action traces, approval boundaries, failed-action recovery and current SKU entitlements."
+    },
+    {
+      "id": "C4",
+      "claim": "Customers experience 85% faster exception resolution.",
+      "origin": "S01",
+      "sources": [
+        "S01"
+      ],
+      "assessment": "quantified_performance_not_verified",
+      "finding": "The reviewed marketing page presents the figure, but the captured evidence does not establish cohort, baseline, measurement definition, distribution or applicability to this buyer.",
+      "next_evidence": "Methodology and reference cohort; baseline-matched, independently measured buyer pilot."
+    },
+    {
+      "id": "C5",
+      "claim": "Movement has SOC 2 Type II and ISO 27001 assurances.",
+      "origin": "S10",
+      "sources": [
+        "S10"
+      ],
+      "assessment": "vendor_attestations_listed_underlying_evidence_not_reviewed",
+      "finding": "Trust-center labels are present. We have not inspected the underlying report/certificate, auditor, dates, exceptions or scope for the product being procured.",
+      "next_evidence": "In-scope certificate/report, validity and audit period, bridge letter if needed, exceptions and remediation. Security owner reviews."
+    }
+  ],
+  "historical_identity": {
+    "name": "project44",
+    "domain": "project44.com",
+    "crustdata_company_id": 631278
+  }
+}

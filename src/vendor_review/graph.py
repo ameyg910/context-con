@@ -7,9 +7,12 @@ from decimal import Decimal
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
+from pydantic import ValidationError
 
 from vendor_review.evidence import ground_final
+from vendor_review.intake import readiness
 from vendor_review.models import invoke_bounded
+from vendor_review.research import RESEARCH_INSTRUCTIONS, execute_local, local_schemas
 from vendor_review.schemas import tool_schemas
 from vendor_review.store import LimitError
 
@@ -30,6 +33,11 @@ honestly. No messages, accounts, watches, deployment or business-system actions 
 Be concise. Don't repeatedly retry failed/denied calls. If exhausted, summarize achieved coverage
 and missing evidence. Use only data actually returned in this chat, and request clarification
 when prior context is missing. Account limits and costs are enforced outside your control.
+Write for a buyer: lead with the direct answer, explain its evidence limit, and give the next
+verification action in plain language. Avoid raw JSON and internal status labels in normal replies.
+On follow-up, expand the relevant saved finding and exact cited passage, explain why it supports
+only the stated scope, and retain dates/qualifiers. If the saved material cannot answer the new
+question, say so and offer/perform bounded further research rather than inventing an explanation.
 """
 
 
@@ -37,9 +45,12 @@ class State(MessagesState):
     turn: str
     deadline: float  # wall clock, so an interrupted checkpoint is not renewed by restart
     outcome: str
+    brief: dict
+    findings: list[dict]
+    identity: dict
 
 
-def context_messages(messages):
+def context_messages(messages, max_bytes=32000):
     """Select whole recent turns; persisted history is never deleted."""
     groups = []
     for message in messages:
@@ -50,7 +61,7 @@ def context_messages(messages):
     chosen, size = [], 0
     for group in reversed(groups):
         group_size = len(json.dumps([m.model_dump() for m in group], default=str).encode())
-        if size + group_size > 32000:
+        if size + group_size > max_bytes:
             break
         chosen = group + chosen
         size += group_size
@@ -59,8 +70,10 @@ def context_messages(messages):
     return [SystemMessage(content=SYSTEM)] + chosen
 
 
-def build_graph(model, client, ledger, settings, checkpointer, event=print):
+def build_graph(model, client, ledger, settings, checkpointer, event=print, review=False):
     schemas = tool_schemas()
+    if review:
+        schemas += local_schemas()
     bound_model = model.bind_tools(schemas)
 
     def model_node(state, config):
@@ -69,7 +82,40 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print):
         try:
             if time.time() >= state["deadline"]:
                 raise LimitError("Turn deadline reached")
-            messages = context_messages(state["messages"])
+            history = state["messages"]
+            if review and state.get("findings"):
+                latest_buyer = next(
+                    i for i in range(len(history) - 1, -1, -1) if history[i].type == "human"
+                )
+                history = history[latest_buyer:]
+            if review and state.get("findings") and history[-1].type == "tool":
+                # Once checked findings are persisted, the final answer can use that structured
+                # dossier rather than replaying entire fetched pages and earlier repair attempts.
+                last_ai = next(
+                    (i for i in range(len(history) - 1, -1, -1) if history[i].type == "ai"), None
+                )
+                if last_ai is not None and any(
+                    c["name"] == "record_findings" for c in history[last_ai].tool_calls
+                ):
+                    buyer = next(m for m in reversed(history[:last_ai]) if m.type == "human")
+                    history = [buyer] + history[last_ai:]
+            messages = context_messages(
+                history, 64000 if review and settings.model_provider == "gemini" else 32000
+            )
+            if review:
+                messages[0] = SystemMessage(
+                    content=SYSTEM
+                    + RESEARCH_INSTRUCTIONS
+                    + "\nPersisted buyer brief and findings:\n"
+                    + json.dumps(
+                        {
+                            "brief": state.get("brief", {}),
+                            "identity": state.get("identity", {}),
+                            "findings": state.get("findings", []),
+                            "intake": readiness(state.get("brief")),
+                        }
+                    )
+                )
             # UTF-8 byte count is a conservative token reservation, including schema overhead.
             reservation = len(json.dumps([m.model_dump() for m in messages], default=str).encode())
             reservation += len(json.dumps(schemas).encode()) + settings.model_output_tokens + 2048
@@ -182,13 +228,83 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print):
     def tools_node(state, config):
         thread = config["configurable"]["thread_id"]
         messages = []
+        updates = {}
+        working = dict(state)
         deadline = time.monotonic() + max(0, state["deadline"] - time.time())
         for call in state["messages"][-1].tool_calls:
-            result = client.execute(
-                call["name"], call["args"], thread, state["turn"], call["id"], deadline
-            )
+            if review and call["name"] in {"update_intake", "record_findings"}:
+                op = None
+                try:
+                    if time.monotonic() >= deadline:
+                        raise LimitError("Turn deadline reached")
+                    prior = ledger.prior(thread, call["id"])
+                    if prior:
+                        raise ValueError("Local operation already recorded; do not reissue")
+                    op = ledger.reserve(thread, state["turn"], call["id"], "tool", call["name"])
+                    result, change = execute_local(call["name"], call["args"], working)
+                    change = settings.redact(change)
+                    working.update(change)
+                    updates.update(change)
+                    ledger.finish(op, "ok", result, actual=0)
+                    event(f"local tool {call['name']} status=ok")
+                except (ValueError, LimitError) as exc:
+                    result = {
+                        "status": "denied",
+                        "message": settings.redact(str(exc))
+                        if not isinstance(exc, ValidationError)
+                        else "Invalid schema fields: "
+                        + json.dumps(
+                            [{"field": e["loc"], "type": e["type"]} for e in exc.errors()]
+                        ),
+                    }
+                    if op:
+                        ledger.finish(op, "denied", result, actual=0)
+                    event(f"local tool {call['name']} denied")
+            elif (
+                review
+                and call["name"] not in {"account_access", "account_credits"}
+                and not readiness(working.get("brief"))["ready"]
+            ):
+                result = {
+                    "status": "denied",
+                    "message": "Intake incomplete; ask buyer before paid research",
+                    "intake": readiness(working.get("brief")),
+                }
+            elif (
+                review
+                and call["name"] not in {"account_access", "account_credits", "identify_company"}
+                and not working.get("identity", {}).get("resolved")
+            ):
+                result = {
+                    "status": "denied",
+                    "message": "Resolve the buyer's exact company domain with identify_company before dependent research",
+                }
+            else:
+                result = client.execute(
+                    call["name"], call["args"], thread, state["turn"], call["id"], deadline
+                )
+                if review and call["name"] == "identify_company" and result.get("status") == "ok":
+                    rows = result.get("data", {}).get("records", [])
+                    matches = rows[0].get("matches", []) if len(rows) == 1 else []
+                    domain = working.get("brief", {}).get("domain", "").lower().removeprefix("www.")
+                    match = matches[0].get("company_data", {}) if len(matches) == 1 else {}
+                    actual = (
+                        match.get("basic_info", {})
+                        .get("primary_domain", "")
+                        .lower()
+                        .removeprefix("www.")
+                    )
+                    identity = {
+                        "resolved": bool(domain and actual == domain),
+                        "company_id": match.get("crustdata_company_id"),
+                        "domain": actual,
+                        "artifact_id": result.get("artifact_id"),
+                    }
+                    working["identity"] = identity
+                    updates["identity"] = identity
             messages.append(ToolMessage(content=json.dumps(result), tool_call_id=call["id"]))
-        return {"messages": messages}
+            working["messages"] = state["messages"] + messages
+        return {"messages": messages, **updates}
 
     graph = StateGraph(State)
     graph.add_node("model", model_node)

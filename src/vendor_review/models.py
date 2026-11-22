@@ -19,6 +19,8 @@ class LocalCall(BaseModel):
         "enrich_company",
         "web_search",
         "fetch_page",
+        "update_intake",
+        "record_findings",
     ]
     arguments: dict
 
