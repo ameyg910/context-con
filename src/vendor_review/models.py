@@ -21,6 +21,12 @@ class LocalCall(BaseModel):
         "fetch_page",
         "update_intake",
         "record_findings",
+        "search_people",
+        "enrich_person",
+        "search_person_posts",
+        "register_reference",
+        "record_coverage",
+        "read_evidence",
     ]
     arguments: dict
 

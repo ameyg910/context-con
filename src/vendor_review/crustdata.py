@@ -8,7 +8,16 @@ import httpx
 from pydantic import ValidationError
 
 from vendor_review.evidence import compact, validate_response
-from vendor_review.schemas import TOOLS, Enrich, request_body
+from vendor_review.people import (
+    PeopleSearch,
+    PersonEnrich,
+    PostSearch,
+    filter_paths,
+    people_body,
+    premium_total,
+    project_professional_data,
+)
+from vendor_review.schemas import Enrich, all_tools, request_body
 from vendor_review.store import LimitError
 
 API_ROOT = "https://api.crustdata.com"
@@ -39,6 +48,7 @@ class Crustdata:
         self.access = None
         self.balance = None
         self.blocked = False
+        self.denied_paths = set()
 
     def close(self):
         self.http.close()
@@ -56,12 +66,29 @@ class Crustdata:
     def price(self, path, value):
         if not self.access or self.balance is None or self.blocked:
             raise LimitError("Run successful account preflight before paid tools")
+        if path in self.denied_paths:
+            raise LimitError("This endpoint was denied; use an authorized evidence path instead")
         entry = next((x for x in self.access["endpoints"] if x.get("path") == path), None)
         if not entry or entry.get("status") != "enabled":
             raise LimitError("Endpoint not enabled for this account/key")
         if "base_credits" not in entry:
             raise LimitError("No authoritative account price; refusing unknown spend")
         price = Decimal(str(entry["base_credits"]))
+        if isinstance(value, (PeopleSearch, PersonEnrich, PostSearch)):
+            body = people_body(value)
+            requested = body["fields"]
+            disabled = (entry.get("fields") or {}).get("disabled", [])
+            if any(
+                field == blocked or field.startswith(blocked + ".")
+                for field in requested
+                for blocked in disabled
+            ):
+                raise LimitError("Selected professional fields are not enabled for this account")
+            price += premium_total(entry.get("premium_fields"), requested)
+            price += premium_total(
+                entry.get("premium_filters"), filter_paths(body.get("filters", {}))
+            )
+            price *= body.get("limit", 1)
         if isinstance(value, Enrich):
             disabled = entry.get("fields", {}).get("disabled", [])
             if any(field in disabled for field in value.fields):
@@ -95,9 +122,10 @@ class Crustdata:
                 raise LimitError("Turn deadline reached")
             if not self.settings.crustdata_api_key.get_secret_value():
                 raise LimitError("CRUSTDATA_API_KEY is missing")
-            if name not in TOOLS:
+            specs = all_tools()
+            if name not in specs:
                 raise LimitError("Tool is not allowlisted")
-            schema, method, path, _ = TOOLS[name]
+            schema, method, path, _ = specs[name]
             value = schema.model_validate(args)
             is_free = method == "GET"
             price, rpm = (Decimal(0), 300) if is_free else self.price(path, value)
@@ -112,7 +140,13 @@ class Crustdata:
             with self.http.stream(
                 method,
                 path,
-                json=request_body(value) if method == "POST" else None,
+                json=(
+                    people_body(value)
+                    if isinstance(value, (PeopleSearch, PersonEnrich, PostSearch))
+                    else request_body(value)
+                )
+                if method == "POST"
+                else None,
                 timeout=timeout,
             ) as response:
                 charge = credit_header(response)
@@ -149,6 +183,8 @@ class Crustdata:
                     raw = json.loads(b"".join(chunks))
                 except (ValueError, UnicodeError):
                     raw = {"capture_error": "Non-JSON response; not treated as evidence"}
+                if isinstance(value, (PeopleSearch, PersonEnrich, PostSearch)):
+                    raw = project_professional_data(raw)
                 artifact = self.ledger.artifact(op, raw)
                 ok = response.is_success and validate_response(name, raw)
                 if ok and name == "account_access":
@@ -157,8 +193,10 @@ class Crustdata:
                     self.balance = Decimal(str(raw["account"]["credits"]))
                 if charge is not None and self.balance is not None and not is_free:
                     self.balance = max(Decimal(0), self.balance - charge)
-                if response.status_code in {401, 403}:
+                if response.status_code in {401, 402}:
                     self.blocked = True
+                if response.status_code == 403:
+                    self.denied_paths.add(path)
                 status = "ok" if ok else "provider_error"
                 if (
                     ok
@@ -174,7 +212,7 @@ class Crustdata:
                     status = "partial"
                 if (
                     ok
-                    and name in {"identify_company", "enrich_company"}
+                    and name in {"identify_company", "enrich_company", "enrich_person"}
                     and not any(row["matches"] for row in raw)
                 ):
                     status = "no_match"
@@ -213,6 +251,19 @@ class Crustdata:
                 else "Invalid tool arguments; schema rejected"
             )
             result = {"status": "denied", "message": message}
+            if isinstance(exc, ValidationError):
+                result["schema_errors"] = [
+                    {
+                        "field": list(error["loc"]),
+                        "type": error["type"],
+                        "bounds": {
+                            key: value
+                            for key, value in (error.get("ctx") or {}).items()
+                            if key in {"le", "ge", "max_length", "min_length"}
+                        },
+                    }
+                    for error in exc.errors()
+                ]
             try:
                 op = self.ledger.reserve(thread, turn, call_key, "tool", name)
                 result["operation_id"] = op

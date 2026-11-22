@@ -52,6 +52,18 @@ def ground_final(content, messages):
 
 
 def compact(name, raw, requested=None):
+    if name in {"search_people", "enrich_person", "search_person_posts"}:
+        if name in {"search_people", "enrich_person"}:
+            from vendor_review.people import compact_role_records
+
+            raw = compact_role_records(raw)
+        serialized = json.dumps(raw, ensure_ascii=False)
+        return {
+            "records": raw if len(serialized) <= 18000 else None,
+            "excerpt": serialized[:18000] if len(serialized) > 18000 else None,
+            "truncated": len(serialized) > 18000,
+            "provenance": "Indexed provider fields, not independent verification; roles and post dates require matching",
+        }
     if name == "account_access":
         return {
             "api_version": raw.get("api_version"),
@@ -104,6 +116,11 @@ def compact(name, raw, requested=None):
             if not page.get("success") or not text:
                 flags.append("fetch_failed_or_empty")
             if any(
+                marker in (page.get("title") or "").lower()
+                for marker in ("page not found", "404 not found", "page unavailable")
+            ):
+                flags.append("possible_not_found")
+            if any(
                 marker in text.lower()
                 for marker in (
                     "verify you are human",
@@ -152,6 +169,29 @@ def compact(name, raw, requested=None):
 
 
 def validate_response(name, raw):
+    if name == "search_people":
+        return (
+            isinstance(raw, dict)
+            and isinstance(raw.get("profiles"), list)
+            and all(isinstance(p, dict) for p in raw["profiles"])
+        )
+    if name == "search_person_posts":
+        return (
+            isinstance(raw, dict)
+            and isinstance(raw.get("posts"), list)
+            and all(isinstance(p, dict) for p in raw["posts"])
+        )
+    if name == "enrich_person":
+        return (
+            isinstance(raw, list)
+            and len(raw) == 1
+            and all(
+                isinstance(r, dict)
+                and isinstance(r.get("matches"), list)
+                and all(isinstance(m.get("person_data"), dict) for m in r["matches"])
+                for r in raw
+            )
+        )
     if name == "account_access":
         return (
             isinstance(raw, dict)
