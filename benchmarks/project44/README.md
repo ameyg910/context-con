@@ -1,4 +1,7 @@
-# project44 benchmark v1.0.0
+# project44 benchmark v1.1.0 (v1.0.0 preserved)
+
+**v1.1.0** (`brief.json`, default) enables the read-only customer and professional branches: R3's stage becomes `customer_corroboration`, `research_branches` marks both branches enabled, and **G13** requires recorded coverage for both, scope-limited statements and explicit gaps. All R1–R8 questions, G1–G12 and missing buyer inputs are unchanged. **v1.0.0** is frozen byte-for-byte in `brief.v1.0.0.json` (`--benchmark-version 1.0.0`), with both branches deferred. Version-history fields are kept out of the model prompt. G11's wording is retained; under v1.1.0 it means a branch can be described as run only when its coverage was actually recorded.
+
 
 Reusable synthetic benchmark recovered from the original project44 probe on 2026-11-22. It is not a real procurement brief, an autonomous success claim or a fixed current-facts answer key.
 
@@ -8,7 +11,7 @@ Reusable synthetic benchmark recovered from the original project44 probe on 2026
 | --- | --- | --- |
 | R1 | Current project44/LSP44 product, SKU, contracting and buyer fit | Vendor research; resolve before fit conclusions |
 | R2 (original C1) | Unified tracking API, modes, auth, webhooks, retries/idempotency and rate limits | Vendor research; runtime/lane coverage remains untested |
-| R3 (original C2) | Girteka adoption, historical/current scope and comparable customer evidence | Retained as pending customer corroboration |
+| R3 (original C2) | Girteka adoption, historical/current scope and comparable customer evidence | v1.1.0: customer corroboration branch (read-only); v1.0.0: pending |
 | R4 (original C3) | AI agents, workflows, dated releases, entitlement, approvals and recovery | Vendor descriptions/releases now; execution verification pending |
 | R5 (original C4) | 85% faster exception resolution: cohort, baseline and applicability | Vendor claim/methodology review; no assumed ROI |
 | R6 (original C5) | SOC 2 Type II/ISO 27001 scope and underlying evidence | Listed assurances versus actually reviewed reports |

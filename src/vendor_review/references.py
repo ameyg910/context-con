@@ -74,6 +74,29 @@ class Reference(StrictInput):
     )
 
 
+RELATIONSHIPS = {
+    "customer": {
+        "direct_customer",
+        "integrator",
+        "downstream_beneficiary",
+        "partner",
+        "supplier",
+        "unknown",
+    },
+    "professional": {
+        "vendor_employee",
+        "former_vendor_employee",
+        "customer_employee",
+        "integrator",
+        "partner",
+        "unknown",
+    },
+    "third_party": {"partner", "supplier", "integrator", "unknown"},
+}
+DIRECT = {"direct_customer", "vendor_employee", "former_vendor_employee", "customer_employee"}
+AUTHORED = {"indexed_original_post", "captured_byline_needs_review"}
+
+
 class Coverage(StrictInput):
     branch: Literal["customer", "professional"]
     status: Literal["pending", "attempted", "blocked", "not_applicable", "sufficient"]
@@ -133,10 +156,23 @@ def captured_pages(messages):
         for page in pages:
             key = (result["artifact_id"], page.get("url"))
             previous = found.get(key, {})
-            passages = list(dict.fromkeys([*previous.get("passages", []), page.get("excerpt", "")]))
+            passages = [
+                p
+                for p in dict.fromkeys(
+                    [
+                        *previous.get("passages", []),
+                        *page.get("passages", []),
+                        page.get("excerpt", ""),
+                    ]
+                )
+                if p
+            ]
+            # Admission flags from any reading of the same capture are kept, never cleared.
+            quality = list(dict.fromkeys([*previous.get("quality", []), *page.get("quality", [])]))
             found[key] = {
                 **previous,
                 **page,
+                "quality": quality,
                 "passages": passages,
                 "artifact_id": result["artifact_id"],
                 "retrieved_at_unix": result.get("retrieved_at_unix"),
@@ -201,6 +237,12 @@ def checked_passage(citation, pages):
         )
     ):
         raise ValueError("Blocked, empty or redirected-host evidence cannot support a reference")
+    # Re-derive from the title too: captures saved before a flag existed must not slip through.
+    if any(
+        marker in (page.get("title") or "").lower()
+        for marker in ("page not found", "404 not found", "page unavailable")
+    ):
+        raise ValueError("A page-not-found capture cannot support a reference or finding")
     return page
 
 
@@ -224,7 +266,7 @@ def read_evidence(args, state, ledger):
     ).fetchone()
     if not row:
         raise ValueError("Saved raw artifact is unavailable")
-    from bs4 import BeautifulSoup
+    from vendor_review.evidence import focus_windows, page_text
 
     raw = json.loads(row[0])
     pages = []
@@ -233,19 +275,44 @@ def read_evidence(args, state, ledger):
         original = originals.get((request.artifact_id, item.get("url")))
         if not original:
             continue
-        soup = BeautifulSoup(item.get("content") or "", "html.parser")
-        for tag in soup(["script", "style", "nav", "footer", "noscript"]):
-            tag.decompose()
-        text = soup.get_text(" ", strip=True)
-        position = text.casefold().find(request.focus.casefold()) if request.focus else 0
-        start = max(0, position - 1000) if position >= 0 else 0
+        text, full, notes = page_text(item.get("content") or "")
+        quality = [q for q in original.get("quality", []) if q != "excerpt_truncated"]
+        quality += [n for n in notes if n not in quality]
+        windows = focus_windows(text, request.focus)
+        focus = {"focus": request.focus, "offset_basis": "readable_text"}
+        if not request.focus:
+            passages = [text[:8000]]
+            focus.update(status="no_focus_requested", windows=[{"start": 0, "end": 8000}])
+        elif windows:
+            passages = [w["text"] for w in windows]
+            focus.update(
+                status="found_in_readable_text",
+                windows=[{"start": w["start"], "end": w["end"]} for w in windows],
+            )
+        elif focus_windows(full, request.focus, limit=1):
+            # Present only in removed consent/navigation markup (for example a cookie-vendor
+            # list). It is reported for review but is not admitted as a citable passage.
+            passages = []
+            quality.append("focus_only_in_removed_boilerplate_review_required")
+            focus.update(
+                status="only_in_removed_boilerplate",
+                boilerplate_context=focus_windows(full, request.focus, width=400, limit=1)[0][
+                    "text"
+                ],
+            )
+        else:
+            passages = []
+            focus.update(status="not_found_in_capture")
+        if len(text) > 8000 and not request.focus:
+            quality.append("excerpt_truncated")
         pages.append(
             {
                 **original,
-                "excerpt": text[start : start + 8000],
-                "passage_offset": start,
-                "focus_found": position >= 0,
-                "passages": [],
+                "excerpt": passages[0] if passages else "",
+                "passages": passages,
+                "quality": quality,
+                "focus_result": focus,
+                "readable_text_chars": len(text),
             }
         )
     return {
@@ -330,25 +397,62 @@ def validate_reference(args, state):
         "independently_verified": False,
         "attribution": "Source interpretation; does not establish a contract or all technical outcomes",
     }
+    allowed = RELATIONSHIPS[reference.kind]
+    if reference.relationship not in allowed:
+        raise ValueError(
+            f"Relationship {reference.relationship} is not valid for a {reference.kind} reference"
+        )
+    extra["relationship_directness"] = (
+        "direct"
+        if reference.relationship in DIRECT
+        else "unknown"
+        if reference.relationship == "unknown"
+        else "indirect"
+    )
     if reference.kind == "customer":
-        company = company_records(state["messages"]).get(reference.domain)
-        if not company or reference.domain == vendor:
+        domain = reference.domain.lower().removeprefix("www.")
+        company = company_records(state["messages"]).get(domain)
+        if not company or domain == vendor.lower().removeprefix("www."):
             raise ValueError("Resolve the distinct customer's exact company domain first")
         vendor_name = re.sub(r"\W+", "", state["brief"].get("vendor", "")).casefold()
-        if not vendor_name or not any(
-            vendor_name in re.sub(r"\W+", "", c.quote).casefold() for c in reference.citations
-        ):
+
+        def names_vendor(citation):
+            return (
+                bool(vendor_name) and vendor_name in re.sub(r"\W+", "", citation.quote).casefold()
+            )
+
+        if not any(names_vendor(c) for c in reference.citations):
             raise ValueError(
                 "Customer relationship evidence must explicitly identify the vendor; unrelated pages are not corroboration"
             )
+        # Ownership and vendor identification must hold for the SAME passage; a vendor-hosted
+        # quote naming the vendor plus an unrelated customer-domain quote is not corroboration.
+        owned = [
+            {"artifact_id": c.artifact_id, "url": c.url}
+            for c in reference.citations
+            if on_domain(c.url, domain) and names_vendor(c)
+        ]
         extra.update(
             {
+                "domain": domain,
                 "resolved_name": (company.get("basic_info") or {}).get("name"),
                 "company_id": company.get("crustdata_company_id"),
                 "identity_artifact_id": company["artifact_id"],
-                "customer_owned_account": any(
-                    on_domain(c.url, reference.domain) for c in reference.citations
-                ),
+                "customer_owned_account": bool(owned),
+                "customer_owned_sources": owned,
+                "source_ownership": [
+                    {
+                        "artifact_id": c.artifact_id,
+                        "url": c.url,
+                        "owner": "customer_domain"
+                        if on_domain(c.url, domain)
+                        else "vendor_domain"
+                        if on_domain(c.url, vendor)
+                        else "other_publisher",
+                        "names_vendor": names_vendor(c),
+                    }
+                    for c in reference.citations
+                ],
             }
         )
     elif reference.kind == "professional":
@@ -360,46 +464,78 @@ def validate_reference(args, state):
         name = (profile.get("basic_profile") or {}).get("name", "")
         if normalized(name).casefold() != normalized(reference.name).casefold():
             raise ValueError("Professional name and captured person identity do not match")
-        original = [
-            page
-            for page in checked
-            if (page.get("actor") or {}).get("crustdata_entity_id") == reference.person_id
-            and (page.get("actor") or {}).get("actor_type") == "person"
-            and page.get("post_type") == "original"
-        ]
-        byline = (
+
+        def texts(page):
+            return [normalized(t) for t in page.get("passages") or [page.get("excerpt", "")]]
+
+        byline_ok = bool(
             reference.author_quote
-            and reference.name.casefold() in reference.author_quote.casefold()
+            and normalized(reference.name).casefold()
+            in normalized(reference.author_quote).casefold()
             and re.search(r"\b(by|author|written)\b", reference.author_quote, re.I)
-            and any(
-                normalized(reference.author_quote) in normalized(p.get("excerpt", ""))
-                for p in checked
-            )
         )
-        if reference.event_date and not any(
-            (p.get("publication_date") or "").startswith(reference.event_date) for p in checked
-        ):
-            if not any(reference.event_date in p.get("excerpt", "") for p in checked):
+
+        def source_authorship(page):
+            actor = page.get("actor") or {}
+            if actor:
+                # Indexed post: authorship comes only from the provider actor, never a byline.
+                if actor.get("crustdata_entity_id") != reference.person_id:
+                    return "other_author"
+                if actor.get("actor_type") != "person":
+                    return "non_person_actor"
+                return (
+                    "indexed_original_post"
+                    if page.get("post_type") == "original"
+                    else "repost_not_authored"
+                )
+            if byline_ok and any(normalized(reference.author_quote) in t for t in texts(page)):
+                return "captured_byline_needs_review"
+            return "unconfirmed"
+
+        per_source = []
+        for citation, page in zip(reference.citations, checked):
+            per_source.append(
+                {
+                    "artifact_id": citation.artifact_id,
+                    "url": citation.url,
+                    "authorship": source_authorship(page),
+                    "publication_date": page.get("publication_date") or "unknown",
+                }
+            )
+        authored = [
+            {"artifact_id": s["artifact_id"], "url": s["url"]}
+            for s in per_source
+            if s["authorship"] in AUTHORED
+        ]
+        event_basis = "not_supplied"
+        if reference.event_date:
+            if any(
+                (p.get("publication_date") or "").startswith(reference.event_date) for p in checked
+            ):
+                event_basis = "indexed_publication_date"
+            elif any(reference.event_date in t for p in checked for t in texts(p)):
+                event_basis = "date_text_in_captured_passage_needs_review"
+            else:
                 raise ValueError(
                     "Event date must be explicit in captured source, not retrieval time"
                 )
+        kinds = {s["authorship"] for s in per_source}
         extra.update(
             {
                 "authorship": "indexed_original_post"
-                if original
+                if "indexed_original_post" in kinds
                 else "captured_byline_needs_review"
-                if byline
+                if "captured_byline_needs_review" in kinds
                 else "unconfirmed",
                 "profile_url": public_profile_url(profile),
-                "authored_sources": [
-                    {"artifact_id": p["artifact_id"], "url": p.get("url")}
-                    for p in checked
-                    if p in original
-                    or (
-                        byline
-                        and normalized(reference.author_quote) in normalized(p.get("excerpt", ""))
-                    )
+                "source_authorship": per_source,
+                "authored_sources": authored,
+                "unauthored_sources": [
+                    {"artifact_id": s["artifact_id"], "url": s["url"], "reason": s["authorship"]}
+                    for s in per_source
+                    if s["authorship"] not in AUTHORED
                 ],
+                "event_date_basis": event_basis,
                 "timeline": role_timeline(
                     profile, reference.role_company_id, reference.role_title, reference.event_date
                 ),
@@ -443,14 +579,17 @@ def validate_coverage(args, state):
     if coverage.status == "sufficient" and not coverage.reference_ids:
         raise ValueError("Sufficiency needs relevant scoped references, not just a search")
     if coverage.status == "sufficient":
+        # Indirect relationships (integrator, partner, downstream beneficiary) and unauthored
+        # professional material are reported, but cannot by themselves make a branch sufficient.
         usable = [
             refs[rid]
             for rid in coverage.reference_ids
-            if (coverage.branch == "customer" and refs[rid].get("customer_owned_account"))
-            or (
-                coverage.branch == "professional"
-                and refs[rid].get("authorship") not in {None, "unconfirmed"}
+            if (
+                coverage.branch == "customer"
+                and refs[rid].get("customer_owned_sources")
+                and refs[rid].get("relationship_directness") == "direct"
             )
+            or (coverage.branch == "professional" and refs[rid].get("authored_sources"))
         ]
         if not all(
             any(req in ref["requirement_ids"] for ref in usable) for req in coverage.requirement_ids

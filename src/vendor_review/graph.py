@@ -80,6 +80,36 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print, revi
         schemas += local_schemas()
     bound_model = model.bind_tools(schemas)
 
+    def budget_stop(state, reason, message):
+        """Stop the turn and record every unfinished branch as blocked with explicit gaps."""
+        coverage = dict(state.get("coverage", {}))
+        if review:
+            for branch in ("customer", "professional"):
+                prior = coverage.get(branch, {})
+                if prior.get("status") in {"sufficient", "not_applicable"}:
+                    continue
+                gaps = list(prior.get("gaps", []))
+                gap = "Captured material has not completed scoped reference review."
+                if gap not in gaps:
+                    gaps.append(gap)
+                coverage[branch] = {
+                    **prior,
+                    "branch": branch,
+                    "status": "blocked",
+                    "prior_status": prior.get("status", "pending"),
+                    "rationale": f"Run stopped at an enforced limit: {reason}"
+                    + (
+                        f" Prior assessment: {prior['rationale']}" if prior.get("rationale") else ""
+                    ),
+                    "stop_reason": reason,
+                    "gaps": gaps,
+                }
+        return {
+            "outcome": "budget_stop",
+            **({"coverage": coverage} if review else {}),
+            "messages": [AIMessage(content=message)],
+        }
+
     def model_node(state, config):
         thread = config["configurable"]["thread_id"]
         op = None
@@ -256,40 +286,20 @@ def build_graph(model, client, ledger, settings, checkpointer, event=print, revi
                 op, "ok", {"message_id": safe.id}, actual=0, tokens=tokens, details=details
             )
             if tokens is not None and tokens > reservation:
-                return {
-                    "messages": [
-                        AIMessage(content="Model exceeded token reservation; stopped this turn.")
-                    ]
-                }
+                return budget_stop(
+                    state,
+                    f"model used {tokens} tokens, above its {reservation}-token reservation",
+                    "Model exceeded token reservation; stopped this turn. "
+                    "Evidence acquired so far remains saved.",
+                )
             event(
                 f"model finish tokens={tokens if tokens is not None else 'unknown_reserved'} usd={usd or 'unpriced'}"
             )
             return {"messages": [safe], "outcome": "tools" if safe.tool_calls else "complete"}
         except LimitError as exc:
-            coverage = dict(state.get("coverage", {}))
-            if review:
-                for branch in ("customer", "professional"):
-                    if coverage.get(branch, {}).get("status") not in {
-                        "sufficient",
-                        "not_applicable",
-                    }:
-                        coverage[branch] = {
-                            **coverage.get(branch, {}),
-                            "branch": branch,
-                            "status": "blocked",
-                            "rationale": f"Run stopped at an enforced limit: {exc}",
-                            "gaps": [
-                                *coverage.get(branch, {}).get("gaps", []),
-                                "Captured material has not completed scoped reference review.",
-                            ],
-                        }
-            return {
-                "outcome": "budget_stop",
-                **({"coverage": coverage} if review else {}),
-                "messages": [
-                    AIMessage(content=f"Stopped: {exc}. Evidence acquired so far remains saved.")
-                ],
-            }
+            return budget_stop(
+                state, str(exc), f"Stopped: {exc}. Evidence acquired so far remains saved."
+            )
         except Exception as exc:
             if op:
                 ledger.finish(

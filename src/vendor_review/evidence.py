@@ -7,6 +7,83 @@ from urllib.parse import urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 
+ALWAYS_REMOVED = ["script", "style", "nav", "footer", "noscript", "template", "svg", "iframe"]
+# Consent-manager/overlay markers seen on public pages. Matching is on id/class/aria-label only,
+# never on visible body text, so an article that discusses cookies is not removed.
+BOILERPLATE = re.compile(
+    r"cookie|consent|gdpr|onetrust|cookiebot|usercentrics|didomi|cmplz|"
+    r"cookieyes|\bcky-|termly|iubenda|truste|privacy[-_]?(banner|notice|popup|modal)",
+    re.I,
+)
+PROTECTED = {"html", "body", "main", "article"}
+
+
+def _marker(tag):
+    attrs = getattr(tag, "attrs", None) or {}
+    classes = attrs.get("class") or []
+    return " ".join(
+        [attrs.get("id") or "", *(classes if isinstance(classes, list) else [classes])]
+        + [attrs.get("aria-label") or ""]
+    )
+
+
+def page_text(html_content):
+    """Return (readable text, full text, extraction notes) for a saved HTML page.
+
+    Readable text drops consent/navigation overlays and prefers an <article>/<main> region when
+    one carries substantial text. Full text keeps everything except scripts/styles so a focus
+    search can report text that exists only inside removed boilerplate. Raw HTML is untouched in
+    the ledger; this is a reading aid, not a modification of the captured artifact.
+    """
+    soup = BeautifulSoup(html_content or "", "html.parser")
+    for tag in soup(["script", "style", "noscript", "template"]):
+        tag.decompose()
+    full = soup.get_text(" ", strip=True)
+    notes = []
+    removed = 0
+    for tag in soup.find_all(True):
+        if getattr(tag, "decomposed", False) or tag.attrs is None:
+            continue
+        if tag.name in PROTECTED or tag.find(list(PROTECTED - {"html", "body"})):
+            continue
+        if tag.name in ALWAYS_REMOVED or BOILERPLATE.search(_marker(tag)):
+            removed += len(tag.get_text(" ", strip=True))
+            tag.decompose()
+    if removed:
+        notes.append("navigation_or_consent_boilerplate_removed")
+    regions = [
+        tag
+        for tag in soup.find_all(["article", "main"]) + soup.find_all(attrs={"role": "main"})
+        if len(tag.get_text(" ", strip=True)) >= 400
+    ]
+    if regions:
+        best = max(regions, key=lambda tag: len(tag.get_text(" ", strip=True)))
+        text = best.get_text(" ", strip=True)
+        notes.append(f"main_content_region:{best.name}")
+    else:
+        text = soup.get_text(" ", strip=True)
+    return text, full, notes
+
+
+def focus_windows(text, focus, width=1500, limit=6):
+    """Exact-text windows around each case-insensitive focus occurrence (non-overlapping)."""
+    if not focus:
+        return []
+    folded, needle = text.casefold(), focus.casefold()
+    windows, cursor = [], 0
+    while len(windows) < limit:
+        position = folded.find(needle, cursor)
+        if position < 0:
+            break
+        start = max(0, position - width // 2)
+        end = min(len(text), position + len(focus) + width // 2)
+        if windows and start <= windows[-1]["end"]:
+            windows[-1]["end"] = end
+        else:
+            windows.append({"start": start, "end": end})
+        cursor = position + len(focus)
+    return [{**w, "text": text[w["start"] : w["end"]]} for w in windows]
+
 
 def ground_final(content, messages):
     """Reject newly invented citation URLs and always attach actual API receipts.
@@ -109,10 +186,12 @@ def compact(name, raw, requested=None):
                     in {"http", "https"}
                 )
             )[:40]
-            for tag in soup(["script", "style", "nav", "footer", "noscript"]):
-                tag.decompose()
-            text = soup.get_text(" ", strip=True)
-            flags = ["relevance_and_claim_support_require_review", "final_redirect_url_not_exposed"]
+            text, full, notes = page_text(html)
+            flags = [
+                "relevance_and_claim_support_require_review",
+                "final_redirect_url_not_exposed",
+                *notes,
+            ]
             if not page.get("success") or not text:
                 flags.append("fetch_failed_or_empty")
             if any(
@@ -121,7 +200,7 @@ def compact(name, raw, requested=None):
             ):
                 flags.append("possible_not_found")
             if any(
-                marker in text.lower()
+                marker in (text if len(text) > 1500 else full).lower()
                 for marker in (
                     "verify you are human",
                     "access denied",

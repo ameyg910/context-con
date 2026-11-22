@@ -9,10 +9,28 @@ from vendor_review.graph import build_graph, turn_input
 BENCHMARK_ROOT = Path(__file__).resolve().parents[2] / "benchmarks"
 
 
-def load_benchmark(name):
-    if name != "project44":
+VERSIONS = {"project44": {"1.1.0": "brief.json", "1.0.0": "brief.v1.0.0.json"}}
+LATEST = {"project44": "1.1.0"}
+# Version-history metadata for reviewers; not needed by the model and kept out of the prompt.
+REVIEWER_ONLY = {"supersedes", "changes_from_1_0_0"}
+
+
+def load_benchmark(name, version=None):
+    """Load a frozen benchmark brief. Historical reference answers are never loaded here."""
+    if name not in VERSIONS:
         raise ValueError("Unknown benchmark")
-    return json.loads((BENCHMARK_ROOT / name / "brief.json").read_text(encoding="utf-8"))
+    version = version or LATEST[name]
+    if version not in VERSIONS[name]:
+        raise ValueError(f"Unknown {name} benchmark version {version}")
+    path = BENCHMARK_ROOT / name / VERSIONS[name][version]
+    case = json.loads(path.read_text(encoding="utf-8"))
+    if case.get("version") != version:
+        raise ValueError("Benchmark file version does not match the requested version")
+    return case
+
+
+def branches_enabled(case):
+    return (case.get("research_branches") or {}).get("customer") == "enabled_read_only"
 
 
 def benchmark_prompt(case, confirm=False):
@@ -20,15 +38,19 @@ def benchmark_prompt(case, confirm=False):
         "This is a versioned synthetic research benchmark, not a real buyer brief. "
         "Preserve every question and check below. Do not invent missing buyer constraints. "
         "Do not treat a benchmark question as an established vendor fact.\n"
-        + json.dumps(case, ensure_ascii=False, separators=(",", ":"))
+        + json.dumps(
+            {k: v for k, v in case.items() if k not in REVIEWER_ONLY},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
     )
     if confirm:
         text += """\nCONFIRM UNDERSTANDING ONLY. No research, no tools, no factual verdict.
 Return JSON only with these fields: understood (boolean), requirements (array of
 {id, question, stage}), checks (array of {id, interpretation}), missing_buyer_inputs
 (array of strings), scope_limitations (array of strings). Include EVERY original R and G ID.
-Use short restatements. Clearly distinguish current vendor-document review from deferred
-customer/professional corroboration. Acknowledge missing commercial thresholds and that model
+Use short restatements. Clearly distinguish current vendor-document review from BRANCH_SCOPE.
+Acknowledge missing commercial thresholds and that model
 agreement does not establish evidence truth. Do not assert that any vendor claim is verified.
 For checks, copy each canonical instruction exactly into interpretation to avoid dropping details.
 In scope_limitations explicitly acknowledge: bounded live read-only Crustdata research IS allowed
@@ -36,6 +58,13 @@ in subsequent research runs; only this confirmation has no tools. Operational ve
 outreach/accounts/watches/deployment are excluded. Known scenario and research questions are NOT
 missing; buyer-specific operational constraints/thresholds are missing. Vendor marketing/badges
 can be discovery/attributed claims, but cannot be treated as independent verification."""
+        text = text.replace(
+            "BRANCH_SCOPE",
+            "enabled read-only customer/professional corroboration branches, whose statements"
+            " support only their stated scope"
+            if branches_enabled(case)
+            else "deferred customer/professional corroboration",
+        )
     else:
         text += "\nStart intake. Ask for unresolved buyer inputs before paid research. Preserve all IDs."
     return text

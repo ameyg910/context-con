@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from vendor_review.intake import readiness
-from vendor_review.research import sources
+from vendor_review.research import finding_key, sources
 
 STATUS_LABELS = {
     "vendor_documented": "Documented by the vendor",
@@ -41,10 +41,37 @@ def link(url):
     return f'<a href="{esc(url)}" rel="noreferrer noopener">{esc(url)}</a>'
 
 
+def source_note(info, pages, citation):
+    page = pages.get((citation["artifact_id"], citation["url"]), {})
+    retrieved = page.get("retrieved_at_unix")
+    parts = [f"artifact {citation['artifact_id']}"]
+    parts.append(
+        "retrieved "
+        + (datetime.fromtimestamp(retrieved, timezone.utc).isoformat() if retrieved else "unknown")
+    )
+    if info.get("authorship"):
+        parts.append("authorship: " + info["authorship"].replace("_", " "))
+    if info.get("publication_date"):
+        parts.append("publication date: " + str(info["publication_date"]))
+    if info.get("owner"):
+        parts.append(
+            "publisher: "
+            + info["owner"].replace("_", " ")
+            + ("; names vendor" if info.get("names_vendor") else "; does not name vendor")
+        )
+    return f"<p><small>{esc(' · '.join(parts))}</small></p>"
+
+
 def render_report(state, thread, budget, operations):
     brief = state.get("brief", {})
     intake = readiness(brief)
-    findings = {f["requirement_id"]: f for f in state.get("findings", [])}
+    grouped = {}
+    for f in state.get("findings", []):
+        grouped.setdefault(f["requirement_id"], []).append(f)
+    order = {"primary": 0, "customer": 1, "professional": 2, "third_party": 3}
+    for items in grouped.values():
+        items.sort(key=lambda f: order[finding_key(f)[1]])
+    findings = grouped
     pages = sources(state.get("messages", []))
     references = state.get("references", [])
     coverage = state.get("coverage", {})
@@ -54,70 +81,76 @@ def render_report(state, thread, budget, operations):
     )
     rows = []
     for requirement in brief.get("requirements", []):
-        finding = findings.get(requirement["id"], {})
-        evidence = []
-        for citation in finding.get("citations", []):
-            page = pages.get((citation["artifact_id"], citation["url"]), {})
-            retrieved = page.get("retrieved_at_unix")
-            date = (
-                datetime.fromtimestamp(retrieved, timezone.utc).isoformat()
-                if retrieved
-                else "unknown"
-            )
-            evidence.append(
-                f"<p>{esc({'vendor_document': 'Vendor document', 'customer_account': 'Customer-owned account', 'professional_statement': 'Attributed professional statement', 'third_party_analysis': 'Third-party account'}.get(citation.get('source_kind', 'vendor_document'), 'Source'))}</p>"
-                f"<blockquote>{esc(citation['quote'])}</blockquote>{link(citation['url'])}"
-                + details(
-                    "Retrieval details",
-                    f"<p>Artifact {esc(citation['artifact_id'])} · retrieved {esc(date)}<br>"
-                    f"Publication/event date: unknown unless established in passage. "
-                    f"Quality: {esc(', '.join(page.get('quality', [])))}</p>",
+        for position, finding in enumerate(findings.get(requirement["id"]) or [{}]):
+            evidence_class = finding_key(finding)[1] if finding else "primary"
+            evidence = []
+            for citation in finding.get("citations", []):
+                page = pages.get((citation["artifact_id"], citation["url"]), {})
+                retrieved = page.get("retrieved_at_unix")
+                date = (
+                    datetime.fromtimestamp(retrieved, timezone.utc).isoformat()
+                    if retrieved
+                    else "unknown"
                 )
-            )
-        steps = finding.get("verification_steps") or [
-            "Fetch relevant product/developer documentation and inspect exact support for this requirement.",
-            "Request a scoped demonstration or reproducible pilot with explicit pass/fail criteria.",
-            "Later: seek customer-owned corroboration and relevant professional artifacts.",
-        ]
-        rows.append(
-            "<tr>"
-            + "".join(
-                f"<td>{cell}</td>"
-                for cell in (
-                    f"<strong>{esc(requirement['id'])} · {esc(requirement['text'])}</strong>"
+                evidence.append(
+                    f"<p>{esc({'vendor_document': 'Vendor document', 'customer_account': 'Customer-owned account', 'professional_statement': 'Attributed professional statement', 'third_party_analysis': 'Third-party account'}.get(citation.get('source_kind', 'vendor_document'), 'Source'))}</p>"
+                    f"<blockquote>{esc(citation['quote'])}</blockquote>{link(citation['url'])}"
                     + details(
-                        "Original buyer wording", f"<p>{esc(requirement['buyer_quote'])}</p>"
-                    ),
-                    f"{esc({'must': 'Required', 'should': 'Preferred', 'question': 'Research question', 'unspecified': 'Needs clarification'}.get(requirement['priority'], requirement['priority']))}<p>What would count as passing: {esc(requirement.get('acceptance_criterion') or 'Needs clarification')}</p>",
-                    esc(finding.get("claim", "This question has not been researched yet.")),
-                    f'<span class="status">{esc(STATUS_LABELS.get(finding.get("status", "cannot_verify"), "Needs review"))}</span>'
-                    "<p>Independently verified: <strong>No</strong></p>",
-                    details(f"Read {len(evidence)} supporting passage(s)", "".join(evidence))
-                    if evidence
-                    else "No supporting page passage recorded yet. Search snippets alone cannot verify this claim.",
-                    esc(
-                        finding.get(
-                            "limitations",
-                            "Research not completed; absence of evidence is not evidence of failure.",
-                        )
-                    ),
-                    "<ol>"
-                    + "".join(f"<li>{esc(step)}</li>" for step in steps[:2])
-                    + "</ol>"
-                    + (
-                        details(
-                            "More verification steps",
-                            "<ol start='3'>"
-                            + "".join(f"<li>{esc(step)}</li>" for step in steps[2:])
-                            + "</ol>",
-                        )
-                        if len(steps) > 2
-                        else ""
-                    ),
+                        "Retrieval details",
+                        f"<p>Artifact {esc(citation['artifact_id'])} · retrieved {esc(date)}<br>"
+                        f"Publication/event date: unknown unless established in passage. "
+                        f"Quality: {esc(', '.join(page.get('quality', [])))}</p>",
+                    )
                 )
+            steps = finding.get("verification_steps") or [
+                "Fetch relevant product/developer documentation and inspect exact support for this requirement.",
+                "Request a scoped demonstration or reproducible pilot with explicit pass/fail criteria.",
+                "Later: seek customer-owned corroboration and relevant professional artifacts.",
+            ]
+            rows.append(
+                "<tr>"
+                + "".join(
+                    f"<td>{cell}</td>"
+                    for cell in (
+                        f"<strong>{esc(requirement['id'])} · {esc(requirement['text'])}</strong>"
+                        + (
+                            f"<p>Separate {esc(evidence_class.replace('_', ' '))} finding (scope kept apart from vendor documents)</p>"
+                            if position
+                            else ""
+                        )
+                        + details(
+                            "Original buyer wording", f"<p>{esc(requirement['buyer_quote'])}</p>"
+                        ),
+                        f"{esc({'must': 'Required', 'should': 'Preferred', 'question': 'Research question', 'unspecified': 'Needs clarification'}.get(requirement['priority'], requirement['priority']))}<p>What would count as passing: {esc(requirement.get('acceptance_criterion') or 'Needs clarification')}</p>",
+                        esc(finding.get("claim", "This question has not been researched yet.")),
+                        f'<span class="status">{esc(STATUS_LABELS.get(finding.get("status", "cannot_verify"), "Needs review"))}</span>'
+                        "<p>Independently verified: <strong>No</strong></p>",
+                        details(f"Read {len(evidence)} supporting passage(s)", "".join(evidence))
+                        if evidence
+                        else "No supporting page passage recorded yet. Search snippets alone cannot verify this claim.",
+                        esc(
+                            finding.get(
+                                "limitations",
+                                "Research not completed; absence of evidence is not evidence of failure.",
+                            )
+                        ),
+                        "<ol>"
+                        + "".join(f"<li>{esc(step)}</li>" for step in steps[:2])
+                        + "</ol>"
+                        + (
+                            details(
+                                "More verification steps",
+                                "<ol start='3'>"
+                                + "".join(f"<li>{esc(step)}</li>" for step in steps[2:])
+                                + "</ol>",
+                            )
+                            if len(steps) > 2
+                            else ""
+                        ),
+                    )
+                )
+                + "</tr>"
             )
-            + "</tr>"
-        )
     if not rows:
         rows = [
             '<tr><td colspan="7">Intake incomplete: no buyer requirements recorded yet.</td></tr>'
@@ -144,8 +177,13 @@ def render_report(state, thread, budget, operations):
     reference_rows = []
     for ref in references:
         timeline = ref.get("timeline", {})
+        per_source = {
+            (s["artifact_id"], s["url"]): s
+            for s in ref.get("source_authorship", []) + ref.get("source_ownership", [])
+        }
         passages = "".join(
             f"<blockquote>{esc(c['quote'])}</blockquote>{link(c['url'])}"
+            + source_note(per_source.get((c["artifact_id"], c["url"]), {}), pages, c)
             for c in ref.get("citations", [])
         )
         reference_rows.append(
@@ -156,11 +194,17 @@ def render_report(state, thread, budget, operations):
                     f"<strong>{esc(ref.get('resolved_name') or ref['name'])}</strong><p>{esc(ref['id'])} · {esc(ref['kind'].replace('_', ' '))}</p>"
                     + (link(ref["profile_url"]) if ref.get("profile_url") else ""),
                     esc(ref["relationship"].replace("_", " "))
-                    + "<p>Direct contract: not verified.</p>",
+                    + f"<p>Relationship: {esc(ref.get('relationship_directness', 'unknown'))}. Direct contract: not verified.</p>",
                     esc(ref["product_scope"])
                     + f"<p>Period: {esc(ref['period_scope'])}<br>Event date: {esc(ref.get('event_date') or 'unknown')}</p>",
                     f"{esc(ref.get('authorship', 'Customer-owned account' if ref.get('customer_owned_account') else 'Attributed source / discovery lead').replace('_', ' '))}"
-                    + f"<p>Role/date match: {esc(timeline.get('status', 'not applicable').replace('_', ' '))}</p>"
+                    + f"<p>Role/date match: {esc(timeline.get('status', 'not applicable').replace('_', ' '))}"
+                    + (
+                        f"<br>Event date basis: {esc(ref['event_date_basis'].replace('_', ' '))}"
+                        if ref.get("event_date_basis")
+                        else ""
+                    )
+                    + "</p>"
                     + (
                         details(
                             "Indexed role details",
@@ -176,6 +220,9 @@ def render_report(state, thread, budget, operations):
             )
             + "</tr>"
         )
+    stopped = state.get("outcome") == "budget_stop" or any(
+        coverage.get(b, {}).get("stop_reason") for b in ("customer", "professional")
+    )
     coverage_rows = "".join(
         "<tr>"
         + "".join(
@@ -214,7 +261,8 @@ Documents and attributed accounts establish only their stated scope, not indepen
 <p>Intake completeness: <strong>{intake["completeness_score"]}/100</strong>. {esc(intake["score_meaning"])}</p>
 <p>Requirement specificity: <strong>{intake["specificity_score"]}/100</strong> (declared priority and acceptance criteria; not a vendor rating).</p>
 <p>Assessment: {"partial" if len(findings) < len(brief.get("requirements", [])) or not intake["ready"] or not branch_complete else "preliminary public-evidence review recorded"}.
-Coverage: {len(findings)} of {len(brief.get("requirements", []))} requirements have recorded findings.</p></section>
+Coverage: {len(findings)} of {len(brief.get("requirements", []))} requirements have recorded findings.</p>
+{"<p><strong>Research stopped at an enforced budget or limit.</strong> Unfinished branches are marked blocked; see Investigation coverage.</p>" if stopped else ""}</section>
 <section class="card"><h2>Constraints and open questions</h2><dl>{constraints}</dl><ul>{questions}</ul></section></div>
 <h2>What we found</h2><p>Read the finding, evidence status and next steps first. Expand any source to see the exact passage. Ask in chat about a requirement ID for a source-backed explanation; questions beyond the saved evidence need further research.</p><div class="scroll"><table><thead><tr>
 <th>Your requirement</th><th>Priority and pass condition</th><th>Finding</th><th>How well is it supported?</th>

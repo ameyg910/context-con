@@ -84,4 +84,8 @@ class Settings(BaseModel):
         value = re.sub(
             r"(?i)Bearer\s+(?!authentication\b|auth\b|token\b)[^\s\"']+", "Bearer [REDACTED]", value
         )
-        return re.sub(r"(?:cd_[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,})", "[REDACTED]", value)
+        return re.sub(
+            r"(?:cd_[A-Za-z0-9_-]{16,}|AIza[A-Za-z0-9_-]{20,}|AQ\.[A-Za-z0-9_-]{30,})",
+            "[REDACTED]",
+            value,
+        )

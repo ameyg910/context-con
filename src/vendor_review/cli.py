@@ -160,7 +160,7 @@ def run(args, settings):
         try:
             if args.confirm_only:
                 record, path = confirm_benchmark(
-                    load_benchmark(args.benchmark),
+                    load_benchmark(args.benchmark, args.benchmark_version),
                     make_model(settings),
                     ledger,
                     settings,
@@ -214,7 +214,11 @@ def run(args, settings):
             display(f"Technical Vendor Evidence Review · foundation · thread={thread}")
             display("/new [name]  /history  /ledger  /report  /exit")
             pending = iter(args.prompt) if args.prompt else None
-            initial = benchmark_prompt(load_benchmark(args.benchmark)) if args.benchmark else None
+            initial = (
+                benchmark_prompt(load_benchmark(args.benchmark, args.benchmark_version))
+                if args.benchmark
+                else None
+            )
             while True:
                 try:
                     if initial is not None:
@@ -280,6 +284,11 @@ def main():
         "--benchmark",
         choices=["project44"],
         help="Load the versioned synthetic benchmark, without historical reference answers",
+    )
+    parser.add_argument(
+        "--benchmark-version",
+        choices=["1.1.0", "1.0.0"],
+        help="Benchmark version (default: latest 1.1.0; 1.0.0 keeps branches deferred)",
     )
     parser.add_argument(
         "--confirm-only",

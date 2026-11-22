@@ -1,6 +1,12 @@
 {
   "id": "project44",
-  "version": "1.0.0",
+  "version": "1.1.0",
+  "supersedes": "1.0.0",
+  "changes_from_1_0_0": [
+    "R3 stage changed from deferred_customer_corroboration to customer_corroboration; question text unchanged.",
+    "Customer and professional branches are enabled as read-only research; professional_branch text updated.",
+    "G13 added. G1-G12, R1-R8 questions and missing_buyer_inputs are unchanged."
+  ],
   "source_review_date": "2026-11-22",
   "scenario_kind": "synthetic benchmark reconstructed from the original assistant-reviewed probe; no real buyer constraints supplied",
   "vendor": "project44",
@@ -22,7 +28,7 @@
     {
       "id": "R3",
       "question": "What evidence supports historical Girteka use, and what current comparable customer deployment can be established? Preserve product, date, region and relationship attribution; do not infer a direct project44-Asendia contract through Girteka.",
-      "stage": "deferred_customer_corroboration",
+      "stage": "customer_corroboration",
       "priority": "question"
     },
     {
@@ -104,6 +110,10 @@
     {
       "id": "G12",
       "instruction": "This historical public probe is not a current ground-truth answer key. Reacquire evidence for live runs, separate stale/reference expectations, and do not hardcode project44 facts into the agent."
+    },
+    {
+      "id": "G13",
+      "instruction": "Customer/professional branches are enabled read-only; record coverage for both with actual operation IDs. Statements support only their stated relationship, product, time and role scope, never verification, a current contract or buying intent. Report explicit gaps when access, evidence or budget stops work; no fixed source/person quota."
     }
   ],
   "missing_buyer_inputs": [
@@ -115,5 +125,9 @@
     "Commercial budget and timeline"
   ],
   "output": "HTML requirements/claim matrix with exact source passages, evidence status, independent-verification limits and verification plan; retain source/cost dossier",
-  "professional_branch": "Deferred: relevant current/former vendor/customer professional evidence, matched to roles/dates and original artifacts; no outreach"
+  "professional_branch": "Enabled read-only: indexed profiles and original posts matched to roles/dates and artifacts; per-source authorship; no contact data or outreach",
+  "research_branches": {
+    "customer": "enabled_read_only",
+    "professional": "enabled_read_only"
+  }
 }

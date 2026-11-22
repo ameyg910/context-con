@@ -63,6 +63,11 @@ than silently skipping a branch or calling search snippets verification. Current
 read-only; do not invoke live/contact tools, outreach, watches or operational vendor APIs.
 Use read_evidence to inspect a saved artifact or a different focused passage without paying for
 another fetch. Original retrieval dates remain unchanged. Reuse before reacquiring unchanged data.
+If a first excerpt is dominated by cookie/consent/navigation text, call read_evidence with a
+focus term before refetching. A focus match only inside removed consent markup is not citable.
+Only a customer-owned passage that itself names the vendor, from a direct customer, can make the
+customer branch sufficient; integrator/partner/beneficiary references stay reported but partial.
+Professional authorship is per source: cite only sources listed in that reference's authored_sources.
 """
 
 
@@ -176,9 +181,12 @@ def validate_findings(args, brief, messages, references=None):
                     for c in ref["citations"]
                 ):
                     raise ValueError("Citation source must belong to its registered reference")
-                if expected == "customer" and not on_domain(citation.url, ref["domain"]):
+                if expected == "customer" and not any(
+                    s["artifact_id"] == citation.artifact_id and s["url"] == citation.url
+                    for s in ref.get("customer_owned_sources", [])
+                ):
                     raise ValueError(
-                        "Vendor-mentioned customer is a lead; customer-owned evidence is required"
+                        "Vendor-mentioned customer is a lead; a customer-owned passage naming the vendor is required"
                     )
                 if expected == "professional" and ref.get("authorship") == "unconfirmed":
                     raise ValueError("Professional attribution is not established")
@@ -259,6 +267,26 @@ def execute_local(name, args, state, ledger=None):
         "resolved"
     ):
         raise ValueError("Resolve vendor identity before recording supported claims")
-    merged = {f["requirement_id"]: f for f in state.get("findings", [])}
-    merged.update({f["requirement_id"]: f for f in new})
-    return {"status": "ok", "saved_requirements": list(merged)}, {"findings": list(merged.values())}
+    merged = {finding_key(f): f for f in state.get("findings", [])}
+    merged.update({finding_key(f): f for f in new})
+    return {
+        "status": "ok",
+        "saved_requirements": list(dict.fromkeys(f["requirement_id"] for f in merged.values())),
+        "saved_findings": [f"{r}:{c}" for r, c in merged],
+    }, {"findings": list(merged.values())}
+
+
+EVIDENCE_CLASS = {
+    "customer_reported": "customer",
+    "professional_attributed": "professional",
+    "third_party_reported": "third_party",
+}
+
+
+def finding_key(finding):
+    """One finding per requirement and evidence class.
+
+    A later customer/professional/third-party finding must not overwrite the vendor-document
+    finding for the same requirement (or vice versa); each keeps its own scope and sources.
+    """
+    return finding["requirement_id"], EVIDENCE_CLASS.get(finding.get("status"), "primary")
